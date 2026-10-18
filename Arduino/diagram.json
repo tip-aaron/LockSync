@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "author": "Sean Coquia",
+  "editor": "wokwi",
+  "parts": [
+    { "type": "board-esp32-devkit-c-v4", "id": "esp", "top": -9.6, "left": -263.96, "attrs": {} },
+    { "type": "wokwi-servo", "id": "servo1", "top": 209.2, "left": -163.2, "attrs": {} },
+    { "type": "wokwi-pir-motion-sensor", "id": "pir1", "top": 13.6, "left": -381.78, "attrs": {} },
+    {
+      "type": "wokwi-buzzer",
+      "id": "bz1",
+      "top": 213.6,
+      "left": -353.4,
+      "attrs": { "volume": "0.1" }
+    },
+    { "type": "wokwi-led", "id": "led1", "top": 284.4, "left": -265, "attrs": { "color": "green" } },
+    { "type": "wokwi-resistor", "id": "r1", "top": 250, "left": -265, "attrs": { "value": "220" } },
+    { "type": "chip-r307-sensor", "id": "chip1", "top": 183.42, "left": 4.8, "attrs": {} },
+    { "type": "wokwi-pushbutton", "id": "btn1", "top": 320, "left": -380, "attrs": { "color": "blue", "label": "Lock Door" } }
+  ],
+  "connections": [
+    [ "esp:TX", "$serialMonitor:RX", "", [] ],
+    [ "esp:RX", "$serialMonitor:TX", "", [] ],
+
+    [ "esp:13", "servo1:PWM", "orange", [] ],
+    [ "esp:5V", "servo1:V+", "red", [] ],
+    [ "esp:GND.1", "servo1:GND", "black", [] ],
+
+    [ "esp:3V3", "pir1:VCC", "red", [] ],
+    [ "esp:14", "pir1:OUT", "green", [] ],
+    [ "esp:GND.1", "pir1:GND", "black", [] ],
+
+    [ "esp:25", "bz1:2", "purple", [] ],
+    [ "esp:GND.1", "bz1:1", "black", [] ],
+
+    [ "esp:26", "led1:A", "green", [] ],
+    [ "led1:C", "r1:1", "black", [] ],
+    [ "r1:2", "esp:GND.1", "black", [] ],
+
+    [ "esp:27", "btn1:1.A", "blue", [] ],
+    [ "btn1:2.B", "esp:GND.1", "black", [] ],
+
+    [ "esp:3V3", "chip1:VCC", "red", [] ],
+    [ "esp:GND.1", "chip1:GND", "black", [] ],
+    [ "esp:17", "chip1:IN", "yellow", [] ],
+    [ "esp:16", "chip1:OUT", "green", [] ]
+  ],
+  "dependencies": {}
+}
