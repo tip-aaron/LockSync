@@ -1,0 +1,32 @@
+name: locksyncie
+description: "LockSync - Connected Smart Locker Management Application."
+publish_to: 'none'
+
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.12.2
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # Firebase Core & Realtime Database
+  firebase_core: ^3.0.0
+  firebase_database: ^11.0.0
+
+  # UI Components
+  cupertino_icons: ^1.0.8
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
+
+  # Assets section (uncomment if you add local assets like campus maps or logos)
+  # assets:
+  #   - assets/images/

@@ -1,0 +1,30 @@
+{
+  "project_info": {
+    "project_number": "712941802833",
+    "firebase_url": "https://locksync-ab6fa-default-rtdb.asia-southeast1.firebasedatabase.app",
+    "project_id": "locksync-ab6fa",
+    "storage_bucket": "locksync-ab6fa.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:712941802833:android:eeec7f9e505ed63302ef70",
+        "android_client_info": {
+          "package_name": "com.tip.locksync"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyB0J_t7KUL7ATT5bqZuMPqFOZnOb7nvfDo"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
