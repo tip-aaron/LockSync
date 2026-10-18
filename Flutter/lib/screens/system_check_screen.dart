@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import '../services/lock_service.dart';
 import 'auth_screen.dart';
 import 'lock_control_screen.dart';
 
@@ -56,13 +57,11 @@ class _SystemCheckScreenState extends State<SystemCheckScreen>
 
   Timer? _pauseTimer;
   Timer? _transitionTimer;
-  bool _isOfflineSimulated = false;
 
   @override
   void initState() {
     super.initState();
     _phase = SystemPhase.checking;
-    _isOfflineSimulated = widget.forceOffline ?? false;
 
     // 1. Progress bar animation for the circular ring
     _progressController = AnimationController(
@@ -125,10 +124,15 @@ class _SystemCheckScreenState extends State<SystemCheckScreen>
     _progressController.forward();
   }
 
-  void _onProgressCompleted() {
+  void _onProgressCompleted() async {
     if (!mounted) return;
 
-    if (_isOfflineSimulated) {
+    final isOffline = widget.forceOffline ??
+        !(await LockService.instance.checkSystemConnectivity());
+
+    if (!mounted) return;
+
+    if (isOffline) {
       setState(() {
         _phase = SystemPhase.offline;
       });
