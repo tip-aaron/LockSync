@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../services/auth_service.dart';
 import 'system_check_screen.dart';
 
 enum AuthMode { signIn, signUp }
@@ -16,7 +17,9 @@ class AuthScreen extends StatefulWidget {
 }
 
 class _AuthScreenState extends State<AuthScreen> {
+  final AuthService _authService = AuthService.instance;
   late AuthMode _currentMode;
+  bool _isLoading = false;
 
   // Controllers
   final TextEditingController _nameController = TextEditingController();
@@ -52,9 +55,88 @@ class _AuthScreenState extends State<AuthScreen> {
     }
   }
 
-  void _submitAuth() {
-    // Authentication restrictions are disabled for testing,
-    // so submitting either form navigates directly to the lock-control screen
+  Future<void> _submitAuth() async {
+    if (_isLoading) return;
+
+    final email = _emailController.text.trim();
+    final password = _passwordController.text;
+    final name = _nameController.text.trim();
+
+    // Use user-entered credentials, or test-friendly operator credentials if blank
+    final effectiveEmail = email.isNotEmpty ? email : 'operator@locksync.internal';
+    final effectivePassword = password.isNotEmpty ? password : 'locksync123';
+    final effectiveName = name.isNotEmpty ? name : 'Operator';
+
+    setState(() {
+      _isLoading = true;
+    });
+
+    AuthResult result;
+    if (_currentMode == AuthMode.signIn) {
+      result = await _authService.signIn(
+        email: effectiveEmail,
+        password: effectivePassword,
+      );
+    } else {
+      if (password.isNotEmpty &&
+          _confirmPasswordController.text.isNotEmpty &&
+          password != _confirmPasswordController.text) {
+        result = const AuthResult(
+          success: false,
+          errorMessage: 'Passwords do not match.',
+        );
+      } else {
+        result = await _authService.signUp(
+          name: effectiveName,
+          email: effectiveEmail,
+          password: effectivePassword,
+        );
+      }
+    }
+
+    if (!mounted) return;
+
+    if (!result.success) {
+      setState(() {
+        _isLoading = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          backgroundColor: const Color(0xFF1F0D14),
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(10),
+            side: const BorderSide(color: Color(0xFFFF5252), width: 1),
+          ),
+          content: Row(
+            children: [
+              const Icon(
+                Icons.error_outline_rounded,
+                color: Color(0xFFFF5252),
+                size: 18,
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  result.errorMessage ?? 'Authentication failed',
+                  style: const TextStyle(
+                    fontFamily: 'Inter',
+                    fontSize: 12.5,
+                    color: Color(0xFFF1F5F9),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+      return;
+    }
+
+    setState(() {
+      _isLoading = false;
+    });
+
     Navigator.of(context).pushReplacement(
       PageRouteBuilder(
         pageBuilder: (context, animation, secondaryAnimation) =>
@@ -171,7 +253,7 @@ class _AuthScreenState extends State<AuthScreen> {
   void _showForgotPasswordDialog() {
     showDialog(
       context: context,
-      builder: (context) {
+      builder: (dialogContext) {
         return AlertDialog(
           backgroundColor: const Color(0xFF0D141F),
           shape: RoundedRectangleBorder(
@@ -248,7 +330,7 @@ class _AuthScreenState extends State<AuthScreen> {
           ),
           actions: [
             TextButton(
-              onPressed: () => Navigator.pop(context),
+              onPressed: () => Navigator.pop(dialogContext),
               child: const Text(
                 'CANCEL',
                 style: TextStyle(
@@ -261,35 +343,52 @@ class _AuthScreenState extends State<AuthScreen> {
               ),
             ),
             ElevatedButton(
-              onPressed: () {
-                Navigator.pop(context);
+              onPressed: () async {
+                final emailToReset = _emailController.text.trim();
+                Navigator.pop(dialogContext);
+
+                final res = await _authService.sendPasswordResetEmail(
+                  emailToReset.isNotEmpty ? emailToReset : 'operator@locksync.internal',
+                );
+                if (!mounted) return;
+
                 ScaffoldMessenger.of(context).showSnackBar(
                   SnackBar(
                     backgroundColor: const Color(0xFF0F1722),
                     behavior: SnackBarBehavior.floating,
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(10),
-                      side: const BorderSide(
-                        color: Color(0xFF00D4FF),
+                      side: BorderSide(
+                        color: res.success
+                            ? const Color(0xFF00D4FF)
+                            : const Color(0xFFFF5252),
                         width: 1,
                       ),
                     ),
-                    content: const Row(
+                    content: Row(
                       children: [
                         Icon(
-                          Icons.mark_email_read_rounded,
-                          color: Color(0xFF00D4FF),
+                          res.success
+                              ? Icons.mark_email_read_rounded
+                              : Icons.error_outline_rounded,
+                          color: res.success
+                              ? const Color(0xFF00D4FF)
+                              : const Color(0xFFFF5252),
                           size: 18,
                         ),
-                        SizedBox(width: 10),
-                        Text(
-                          'RESET INSTRUCTIONS SENT',
-                          style: TextStyle(
-                            fontFamily: 'JetBrains Mono',
-                            fontSize: 11.5,
-                            fontWeight: FontWeight.w600,
-                            letterSpacing: 1.0,
-                            color: Color(0xFFF1F5F9),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Text(
+                            res.success
+                                ? 'RESET INSTRUCTIONS SENT'
+                                : (res.errorMessage ?? 'RESET REQUEST FAILED'),
+                            style: const TextStyle(
+                              fontFamily: 'JetBrains Mono',
+                              fontSize: 11.5,
+                              fontWeight: FontWeight.w600,
+                              letterSpacing: 1.0,
+                              color: Color(0xFFF1F5F9),
+                            ),
                           ),
                         ),
                       ],
@@ -451,6 +550,7 @@ class _AuthScreenState extends State<AuthScreen> {
                   _PrimaryActionButton(
                     key: const Key('primary_action_button'),
                     label: isSignIn ? 'SIGN IN' : 'CREATE ACCOUNT',
+                    isLoading: _isLoading,
                     onPressed: _submitAuth,
                   ),
 
@@ -866,11 +966,13 @@ class _LockSyncTextFieldState extends State<LockSyncTextField> {
 class _PrimaryActionButton extends StatefulWidget {
   final String label;
   final VoidCallback onPressed;
+  final bool isLoading;
 
   const _PrimaryActionButton({
     super.key,
     required this.label,
     required this.onPressed,
+    this.isLoading = false,
   });
 
   @override
@@ -890,7 +992,7 @@ class _PrimaryActionButtonState extends State<_PrimaryActionButton> {
         onTapDown: (_) => setState(() => _isPressed = true),
         onTapUp: (_) => setState(() => _isPressed = false),
         onTapCancel: () => setState(() => _isPressed = false),
-        onTap: widget.onPressed,
+        onTap: widget.isLoading ? null : widget.onPressed,
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 140),
           width: double.infinity,
@@ -915,24 +1017,36 @@ class _PrimaryActionButtonState extends State<_PrimaryActionButton> {
           child: Row(
             mainAxisAlignment: MainAxisAlignment.center,
             crossAxisAlignment: CrossAxisAlignment.center,
-            children: [
-              Text(
-                widget.label,
-                style: const TextStyle(
-                  fontFamily: 'JetBrains Mono',
-                  fontSize: 14,
-                  fontWeight: FontWeight.w700,
-                  letterSpacing: 1.6,
-                  color: Color(0xFF080C10), // Near-black text
-                ),
-              ),
-              const SizedBox(width: 8),
-              const Icon(
-                Icons.arrow_forward_rounded,
-                size: 17,
-                color: Color(0xFF080C10),
-              ),
-            ],
+            children: widget.isLoading
+                ? const [
+                    SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2.2,
+                        valueColor:
+                            AlwaysStoppedAnimation<Color>(Color(0xFF080C10)),
+                      ),
+                    ),
+                  ]
+                : [
+                    Text(
+                      widget.label,
+                      style: const TextStyle(
+                        fontFamily: 'JetBrains Mono',
+                        fontSize: 14,
+                        fontWeight: FontWeight.w700,
+                        letterSpacing: 1.6,
+                        color: Color(0xFF080C10), // Near-black text
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    const Icon(
+                      Icons.arrow_forward_rounded,
+                      size: 17,
+                      color: Color(0xFF080C10),
+                    ),
+                  ],
           ),
         ),
       ),

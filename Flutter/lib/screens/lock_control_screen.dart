@@ -1,5 +1,10 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
-import 'auth_screen.dart';
+import '../main.dart';
+import '../models/lock_model.dart';
+import '../services/auth_service.dart';
+import '../services/lock_service.dart';
+import 'fingerprint_enrollment_modal.dart';
 
 class LockControlScreen extends StatefulWidget {
   const LockControlScreen({super.key});
@@ -10,10 +15,15 @@ class LockControlScreen extends StatefulWidget {
 
 class _LockControlScreenState extends State<LockControlScreen>
     with SingleTickerProviderStateMixin {
-  // Lock state
+  // Lock state & telemetry from Firebase
   bool _isLocked = true;
   bool _isProcessing = false;
   String _deviceName = 'LOCKER 01';
+  LockDevice? _device;
+  List<ActivityLogEntry> _activityLog = [];
+
+  StreamSubscription<LockDevice>? _deviceSub;
+  StreamSubscription<List<ActivityLogEntry>>? _historySub;
 
   // Navigation tab index:
   // 0: HISTORY (Left)
@@ -25,40 +35,6 @@ class _LockControlScreenState extends State<LockControlScreen>
   late AnimationController _animController;
   late Animation<double> _scaleAnimation;
 
-  // Live activity log
-  final List<Map<String, dynamic>> _activityLog = [
-    {
-      'title': 'Locker unlocked',
-      'subtitle': 'Biometric access',
-      'time': 'Today, 10:42 AM',
-      'isUnlock': true,
-    },
-    {
-      'title': 'Locker secured',
-      'subtitle': 'Auto-lock timer (30s)',
-      'time': 'Today, 08:15 AM',
-      'isUnlock': false,
-    },
-    {
-      'title': 'Locker secured',
-      'subtitle': 'Manual command via app',
-      'time': 'Yesterday, 06:20 PM',
-      'isUnlock': false,
-    },
-    {
-      'title': 'Locker unlocked',
-      'subtitle': 'NFC Master Key',
-      'time': 'Yesterday, 01:12 PM',
-      'isUnlock': true,
-    },
-    {
-      'title': 'System online',
-      'subtitle': 'Arduino ESP32 handshake',
-      'time': 'Yesterday, 08:00 AM',
-      'isUnlock': false,
-    },
-  ];
-
   @override
   void initState() {
     super.initState();
@@ -69,73 +45,110 @@ class _LockControlScreenState extends State<LockControlScreen>
     _scaleAnimation = Tween<double>(begin: 1.0, end: 0.96).animate(
       CurvedAnimation(parent: _animController, curve: Curves.easeInOut),
     );
+
+    // Subscribe to live Firebase Realtime Database lock telemetry
+    _deviceSub = LockService.instance.streamLock().listen((device) {
+      if (mounted) {
+        setState(() {
+          _device = device;
+          _isLocked = device.isLocked;
+          _deviceName = device.name;
+        });
+      }
+    });
+
+    // Subscribe to live Firebase Realtime Database access history
+    _historySub = LockService.instance.streamHistory().listen((entries) {
+      if (mounted) {
+        setState(() {
+          _activityLog = entries;
+        });
+      }
+    });
   }
 
   @override
   void dispose() {
+    _deviceSub?.cancel();
+    _historySub?.cancel();
     _animController.dispose();
     super.dispose();
   }
 
-  void _toggleLockState({bool isBiometric = false}) {
+  Future<void> _toggleLockState({bool isBiometric = false}) async {
     if (_isProcessing) return;
-
-    _animController.forward().then((_) {
-      _animController.reverse();
-    });
-
     setState(() {
-      _isLocked = !_isLocked;
-      final newEvent = {
-        'title': _isLocked ? 'Locker secured' : 'Locker unlocked',
-        'subtitle': isBiometric ? 'Biometric access' : 'LockSync app control',
-        'time': 'Just now',
-        'isUnlock': !_isLocked,
-      };
-      _activityLog.insert(0, newEvent);
+      _isProcessing = true;
     });
 
-    ScaffoldMessenger.of(context).clearSnackBars();
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        backgroundColor: const Color(0xFF0D141F),
-        behavior: SnackBarBehavior.floating,
-        duration: const Duration(milliseconds: 1800),
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(10),
-          side: const BorderSide(color: Color(0xFF00D4FF), width: 1),
-        ),
-        content: Row(
-          children: [
-            Icon(
-              _isLocked ? Icons.lock_rounded : Icons.lock_open_rounded,
-              color: const Color(0xFF00D4FF),
-              size: 18,
-            ),
-            const SizedBox(width: 10),
-            Text(
-              _isLocked
-                  ? 'ARDUINO: LOCK ENGAGED'
-                  : 'ARDUINO: LOCK RELEASED',
-              style: const TextStyle(
-                fontFamily: 'JetBrains Mono',
-                fontSize: 11.5,
-                fontWeight: FontWeight.w700,
-                letterSpacing: 1.2,
-                color: Color(0xFFF1F5F9),
+    try {
+      _animController.forward().then((_) {
+        _animController.reverse();
+      });
+
+      final targetState = !_isLocked;
+      setState(() {
+        _isLocked = targetState;
+      });
+
+      await LockService.instance.setLockState(
+        targetState,
+        isBiometric: isBiometric,
+        userEmail: AuthService.instance.currentUserEmail,
+      );
+
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).clearSnackBars();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          backgroundColor: const Color(0xFF0D141F),
+          behavior: SnackBarBehavior.floating,
+          duration: const Duration(milliseconds: 1800),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(10),
+            side: const BorderSide(color: Color(0xFF00D4FF), width: 1),
+          ),
+          content: Row(
+            children: [
+              Icon(
+                _isLocked ? Icons.lock_rounded : Icons.lock_open_rounded,
+                color: const Color(0xFF00D4FF),
+                size: 18,
               ),
-            ),
-          ],
+              const SizedBox(width: 10),
+              Text(
+                _isLocked
+                    ? 'ARDUINO: LOCK ENGAGED'
+                    : 'ARDUINO: LOCK RELEASED',
+                style: const TextStyle(
+                  fontFamily: 'JetBrains Mono',
+                  fontSize: 11.5,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: 1.2,
+                  color: Color(0xFFF1F5F9),
+                ),
+              ),
+            ],
+          ),
         ),
-      ),
-    );
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isProcessing = false;
+        });
+      } else {
+        _isProcessing = false;
+      }
+    }
   }
 
   void _showDeviceRenameDialog() {
     final controller = TextEditingController(text: _deviceName);
     showDialog(
       context: context,
-      builder: (context) {
+      builder: (dialogContext) {
         return AlertDialog(
           backgroundColor: const Color(0xFF0D141F),
           shape: RoundedRectangleBorder(
@@ -191,7 +204,7 @@ class _LockControlScreenState extends State<LockControlScreen>
           ),
           actions: [
             TextButton(
-              onPressed: () => Navigator.pop(context),
+              onPressed: () => Navigator.pop(dialogContext),
               child: const Text(
                 'CANCEL',
                 style: TextStyle(
@@ -202,13 +215,15 @@ class _LockControlScreenState extends State<LockControlScreen>
               ),
             ),
             ElevatedButton(
-              onPressed: () {
-                if (controller.text.trim().isNotEmpty) {
+              onPressed: () async {
+                final newName = controller.text.trim();
+                Navigator.pop(dialogContext);
+                if (newName.isNotEmpty) {
                   setState(() {
-                    _deviceName = controller.text.trim().toUpperCase();
+                    _deviceName = newName.toUpperCase();
                   });
+                  await LockService.instance.updateDeviceName(newName);
                 }
-                Navigator.pop(context);
               },
               style: ElevatedButton.styleFrom(
                 backgroundColor: const Color(0xFF00D4FF),
@@ -228,6 +243,498 @@ class _LockControlScreenState extends State<LockControlScreen>
               ),
             ),
           ],
+        );
+      },
+    );
+  }
+
+  void _confirmDeleteSlot(int slotId, String label) {
+    showDialog(
+      context: context,
+      builder: (dialogCtx) => AlertDialog(
+        backgroundColor: const Color(0xFF0D141F),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(10),
+          side: const BorderSide(color: Color(0xFF162232)),
+        ),
+        title: const Text(
+          'REMOVE FINGERPRINT',
+          style: TextStyle(
+            fontFamily: 'JetBrains Mono',
+            fontSize: 14,
+            fontWeight: FontWeight.w700,
+            letterSpacing: 1.2,
+            color: Color(0xFFF1F5F9),
+          ),
+        ),
+        content: Text(
+          'Are you sure you want to remove "$label" (Slot #$slotId) from the ES608 sensor and Firebase?',
+          style: const TextStyle(
+            fontFamily: 'Inter',
+            fontSize: 13,
+            color: Color(0xFF7A889B),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogCtx),
+            child: const Text(
+              'CANCEL',
+              style: TextStyle(
+                fontFamily: 'JetBrains Mono',
+                color: Color(0xFF7A889B),
+              ),
+            ),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              Navigator.pop(dialogCtx);
+              await LockService.instance.deleteFingerprintSlot(slotId);
+            },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFFFF5252),
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(8),
+              ),
+              elevation: 0,
+            ),
+            child: const Text(
+              'REMOVE',
+              style: TextStyle(
+                fontFamily: 'JetBrains Mono',
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showDeviceInformationDialog() {
+    showDialog(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          backgroundColor: const Color(0xFF0D141F),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+            side: const BorderSide(color: Color(0xFF162232), width: 1.2),
+          ),
+          titlePadding: const EdgeInsets.fromLTRB(20, 20, 20, 10),
+          contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+          actionsPadding: const EdgeInsets.fromLTRB(20, 10, 20, 16),
+          title: Row(
+            children: [
+              Container(
+                width: 32,
+                height: 32,
+                decoration: BoxDecoration(
+                  color: const Color(0xFF00D4FF).withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: const Icon(
+                  Icons.developer_board_rounded,
+                  size: 18,
+                  color: Color(0xFF00D4FF),
+                ),
+              ),
+              const SizedBox(width: 10),
+              const Text(
+                'DEVICE INFORMATION',
+                style: TextStyle(
+                  fontFamily: 'JetBrains Mono',
+                  fontSize: 14,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: 1.2,
+                  color: Color(0xFFF1F5F9),
+                ),
+              ),
+            ],
+          ),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                _buildInfoDialogRow('Device Name', _device?.name ?? 'LOCKER 01'),
+                const Divider(color: Color(0xFF162232), height: 16),
+                _buildInfoDialogRow('Microcontroller', _device?.microcontroller ?? 'Arduino Nano ESP32'),
+                const Divider(color: Color(0xFF162232), height: 16),
+                _buildInfoDialogRow('Firmware Version', _device?.firmware ?? 'v2.4.1 (Latest)'),
+                const Divider(color: Color(0xFF162232), height: 16),
+                _buildInfoDialogRow('Target RTDB Node', '/lockers/locker_01'),
+                const Divider(color: Color(0xFF162232), height: 16),
+                _buildInfoDialogRow('Biometric Sensor', 'ES608 Optical Module'),
+                const Divider(color: Color(0xFF162232), height: 16),
+                _buildInfoDialogRow('Auto-Lock Timeout', '${_device?.autoLockTimeout ?? 30} Seconds'),
+                const Divider(color: Color(0xFF162232), height: 16),
+                _buildInfoDialogRow('UART Baud Rate', '${_device?.baudRate ?? 115200} bps'),
+                const Divider(color: Color(0xFF162232), height: 16),
+                _buildInfoDialogRow('Telemetry Stream', 'ESP32 Active / Connected', isHighlight: true),
+              ],
+            ),
+          ),
+          actions: [
+            SizedBox(
+              width: double.infinity,
+              height: 44,
+              child: ElevatedButton(
+                key: const Key('close_device_info_dialog_button'),
+                onPressed: () => Navigator.pop(dialogContext),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF00D4FF),
+                  foregroundColor: const Color(0xFF080C10),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  elevation: 0,
+                ),
+                child: const Text(
+                  'CLOSE',
+                  style: TextStyle(
+                    fontFamily: 'JetBrains Mono',
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: 1.0,
+                  ),
+                ),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  void _showChangePasswordDialog() {
+    final newPasswordController = TextEditingController();
+    final confirmPasswordController = TextEditingController();
+    bool obscureNew = true;
+    bool obscureConfirm = true;
+    String? errorMessage;
+    bool isSubmitting = false;
+
+    showDialog(
+      context: context,
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              backgroundColor: const Color(0xFF0D141F),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+                side: const BorderSide(color: Color(0xFF162232), width: 1.2),
+              ),
+              titlePadding: const EdgeInsets.fromLTRB(20, 20, 20, 10),
+              contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+              actionsPadding: const EdgeInsets.fromLTRB(20, 12, 20, 18),
+              title: Row(
+                children: [
+                  Container(
+                    width: 32,
+                    height: 32,
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF00D4FF).withValues(alpha: 0.12),
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: const Icon(
+                      Icons.lock_reset_rounded,
+                      size: 18,
+                      color: Color(0xFF00D4FF),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  const Text(
+                    'CHANGE PASSWORD',
+                    style: TextStyle(
+                      fontFamily: 'JetBrains Mono',
+                      fontSize: 14,
+                      fontWeight: FontWeight.w800,
+                      letterSpacing: 1.2,
+                      color: Color(0xFFF1F5F9),
+                    ),
+                  ),
+                ],
+              ),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Account: ${AuthService.instance.currentUserEmail ?? "operator@locksync.internal"}',
+                      style: const TextStyle(
+                        fontFamily: 'JetBrains Mono',
+                        fontSize: 10.5,
+                        color: Color(0xFF00D4FF),
+                      ),
+                    ),
+                    const SizedBox(height: 14),
+
+                    // New Password Label
+                    const Text(
+                      'NEW PASSWORD',
+                      style: TextStyle(
+                        fontFamily: 'JetBrains Mono',
+                        fontSize: 10,
+                        fontWeight: FontWeight.w600,
+                        letterSpacing: 1.1,
+                        color: Color(0xFF7A889B),
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    Container(
+                      height: 46,
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF090E16),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: const Color(0xFF1E2E42)),
+                      ),
+                      padding: const EdgeInsets.symmetric(horizontal: 12),
+                      alignment: Alignment.centerLeft,
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: TextField(
+                              key: const Key('change_password_new_input'),
+                              controller: newPasswordController,
+                              obscureText: obscureNew,
+                              style: const TextStyle(
+                                fontFamily: 'Inter',
+                                fontSize: 13,
+                                color: Color(0xFFF1F5F9),
+                              ),
+                              decoration: const InputDecoration(
+                                border: InputBorder.none,
+                                isDense: true,
+                                hintText: '6-digit passcode (Default: 123456)',
+                                hintStyle: TextStyle(
+                                  fontFamily: 'Inter',
+                                  fontSize: 12,
+                                  color: Color(0xFF4A5C70),
+                                ),
+                              ),
+                            ),
+                          ),
+                          IconButton(
+                            icon: Icon(
+                              obscureNew ? Icons.visibility_off_outlined : Icons.visibility_outlined,
+                              size: 18,
+                              color: const Color(0xFF7A889B),
+                            ),
+                            onPressed: () {
+                              setDialogState(() {
+                                obscureNew = !obscureNew;
+                              });
+                            },
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 14),
+
+                    // Confirm Password Label
+                    const Text(
+                      'CONFIRM PASSWORD',
+                      style: TextStyle(
+                        fontFamily: 'JetBrains Mono',
+                        fontSize: 10,
+                        fontWeight: FontWeight.w600,
+                        letterSpacing: 1.1,
+                        color: Color(0xFF7A889B),
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    Container(
+                      height: 46,
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF090E16),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: const Color(0xFF1E2E42)),
+                      ),
+                      padding: const EdgeInsets.symmetric(horizontal: 12),
+                      alignment: Alignment.centerLeft,
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: TextField(
+                              key: const Key('change_password_confirm_input'),
+                              controller: confirmPasswordController,
+                              obscureText: obscureConfirm,
+                              style: const TextStyle(
+                                fontFamily: 'Inter',
+                                fontSize: 13,
+                                color: Color(0xFFF1F5F9),
+                              ),
+                              decoration: const InputDecoration(
+                                border: InputBorder.none,
+                                isDense: true,
+                                hintText: 'Re-enter new password',
+                                hintStyle: TextStyle(
+                                  fontFamily: 'Inter',
+                                  fontSize: 12,
+                                  color: Color(0xFF4A5C70),
+                                ),
+                              ),
+                            ),
+                          ),
+                          IconButton(
+                            icon: Icon(
+                              obscureConfirm ? Icons.visibility_off_outlined : Icons.visibility_outlined,
+                              size: 18,
+                              color: const Color(0xFF7A889B),
+                            ),
+                            onPressed: () {
+                              setDialogState(() {
+                                obscureConfirm = !obscureConfirm;
+                              });
+                            },
+                          ),
+                        ],
+                      ),
+                    ),
+
+                    if (errorMessage != null) ...[
+                      const SizedBox(height: 10),
+                      Text(
+                        errorMessage!,
+                        style: const TextStyle(
+                          fontFamily: 'Inter',
+                          fontSize: 11.5,
+                          color: Color(0xFFFF5252),
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              actions: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton(
+                        key: const Key('cancel_change_password_button'),
+                        onPressed: isSubmitting ? null : () => Navigator.pop(dialogContext),
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: const Color(0xFF7A889B),
+                          side: const BorderSide(color: Color(0xFF1E2E42)),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                        ),
+                        child: const Text(
+                          'CANCEL',
+                          style: TextStyle(
+                            fontFamily: 'JetBrains Mono',
+                            fontSize: 11.5,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: ElevatedButton(
+                        key: const Key('submit_change_password_button'),
+                        onPressed: isSubmitting
+                            ? null
+                            : () async {
+                                final newPass = newPasswordController.text.trim();
+                                final confirmPass = confirmPasswordController.text.trim();
+
+                                if (newPass.length < 6) {
+                                  setDialogState(() {
+                                    errorMessage = 'Password must be at least 6 characters.';
+                                  });
+                                  return;
+                                }
+                                if (newPass != confirmPass) {
+                                  setDialogState(() {
+                                    errorMessage = 'Passwords do not match.';
+                                  });
+                                  return;
+                                }
+
+                                setDialogState(() {
+                                  isSubmitting = true;
+                                  errorMessage = null;
+                                });
+
+                                final res = await AuthService.instance.updatePassword(newPass);
+
+                                if (!dialogContext.mounted) return;
+
+                                if (!res.success) {
+                                  setDialogState(() {
+                                    isSubmitting = false;
+                                    errorMessage = res.errorMessage ?? 'Failed to update password.';
+                                  });
+                                } else {
+                                  Navigator.pop(dialogContext);
+                                  if (mounted) {
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      SnackBar(
+                                        backgroundColor: const Color(0xFF0D141F),
+                                        behavior: SnackBarBehavior.floating,
+                                        shape: RoundedRectangleBorder(
+                                          borderRadius: BorderRadius.circular(10),
+                                          side: const BorderSide(color: Color(0xFF00D4FF), width: 1),
+                                        ),
+                                        content: const Row(
+                                          children: [
+                                            Icon(Icons.check_circle_rounded, color: Color(0xFF00D4FF), size: 18),
+                                            SizedBox(width: 10),
+                                            Text(
+                                              'PASSWORD UPDATED SUCCESSFULLY',
+                                              style: TextStyle(
+                                                fontFamily: 'JetBrains Mono',
+                                                fontSize: 11.5,
+                                                fontWeight: FontWeight.w600,
+                                                color: Color(0xFFF1F5F9),
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                    );
+                                  }
+                                }
+                              },
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(0xFF00D4FF),
+                          foregroundColor: const Color(0xFF080C10),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                          elevation: 0,
+                        ),
+                        child: isSubmitting
+                            ? const SizedBox(
+                                width: 16,
+                                height: 16,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  color: Color(0xFF080C10),
+                                ),
+                              )
+                            : const Text(
+                                'UPDATE',
+                                style: TextStyle(
+                                  fontFamily: 'JetBrains Mono',
+                                  fontSize: 11.5,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            );
+          },
         );
       },
     );
@@ -580,7 +1087,7 @@ class _LockControlScreenState extends State<LockControlScreen>
                   child: _buildStatusColumn(
                     label: 'SIGNAL',
                     icon: Icons.wifi_rounded,
-                    value: 'STRONG',
+                    value: _device?.signal ?? 'STRONG',
                     valueColor: const Color(0xFFF1F5F9),
                   ),
                 ),
@@ -597,8 +1104,10 @@ class _LockControlScreenState extends State<LockControlScreen>
                   child: _buildStatusColumn(
                     label: 'DEVICE',
                     icon: Icons.developer_board_rounded,
-                    value: 'ONLINE',
-                    valueColor: const Color(0xFF00D4FF),
+                    value: (_device?.isOnline ?? true) ? 'ONLINE' : 'OFFLINE',
+                    valueColor: (_device?.isOnline ?? true)
+                        ? const Color(0xFF00D4FF)
+                        : const Color(0xFFFF5252),
                   ),
                 ),
 
@@ -703,79 +1212,91 @@ class _LockControlScreenState extends State<LockControlScreen>
         ),
         const Divider(color: Color(0xFF162232), height: 1),
         Expanded(
-          child: ListView.separated(
-            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
-            itemCount: _activityLog.length,
-            separatorBuilder: (_, __) => const SizedBox(height: 10),
-            itemBuilder: (context, index) {
-              final event = _activityLog[index];
-              final isUnlock = event['isUnlock'] as bool;
-              return Container(
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF090F17),
-                  borderRadius: BorderRadius.circular(10),
-                  border: Border.all(
-                    color: const Color(0xFF162232),
-                    width: 1,
-                  ),
-                ),
-                child: Row(
-                  children: [
-                    Container(
-                      width: 36,
-                      height: 36,
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF00D4FF).withOpacity(0.1),
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: Icon(
-                        isUnlock
-                            ? Icons.lock_open_rounded
-                            : Icons.lock_rounded,
-                        color: const Color(0xFF00D4FF),
-                        size: 18,
-                      ),
+          child: _activityLog.isEmpty
+              ? const Center(
+                  child: Text(
+                    'No access history recorded yet.',
+                    style: TextStyle(
+                      fontFamily: 'Inter',
+                      fontSize: 13,
+                      color: Color(0xFF6B7C93),
                     ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
+                  ),
+                )
+              : ListView.separated(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+                  itemCount: _activityLog.length,
+                  separatorBuilder: (_, _) => const SizedBox(height: 10),
+                  itemBuilder: (context, index) {
+                    final event = _activityLog[index];
+                    final isUnlock = event.isUnlock;
+                    return Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF090F17),
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(
+                          color: const Color(0xFF162232),
+                          width: 1,
+                        ),
+                      ),
+                      child: Row(
                         children: [
-                          Text(
-                            event['title'] as String,
-                            style: const TextStyle(
-                              fontFamily: 'Inter',
-                              fontSize: 13,
-                              fontWeight: FontWeight.w600,
-                              color: Color(0xFFF1F5F9),
+                          Container(
+                            width: 36,
+                            height: 36,
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF00D4FF).withOpacity(0.1),
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: Icon(
+                              isUnlock
+                                  ? Icons.lock_open_rounded
+                                  : Icons.lock_rounded,
+                              color: const Color(0xFF00D4FF),
+                              size: 18,
                             ),
                           ),
-                          const SizedBox(height: 2),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  event.title,
+                                  style: const TextStyle(
+                                    fontFamily: 'Inter',
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w600,
+                                    color: Color(0xFFF1F5F9),
+                                  ),
+                                ),
+                                const SizedBox(height: 2),
+                                Text(
+                                  event.subtitle,
+                                  style: const TextStyle(
+                                    fontFamily: 'Inter',
+                                    fontSize: 11.5,
+                                    color: Color(0xFF7A889B),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
                           Text(
-                            event['subtitle'] as String,
+                            event.formattedTime,
                             style: const TextStyle(
-                              fontFamily: 'Inter',
-                              fontSize: 11.5,
-                              color: Color(0xFF7A889B),
+                              fontFamily: 'JetBrains Mono',
+                              fontSize: 10,
+                              color: Color(0xFF5A6B80),
                             ),
                           ),
                         ],
                       ),
-                    ),
-                    Text(
-                      event['time'] as String,
-                      style: const TextStyle(
-                        fontFamily: 'JetBrains Mono',
-                        fontSize: 10,
-                        color: Color(0xFF5A6B80),
-                      ),
-                    ),
-                  ],
+                    );
+                  },
                 ),
-              );
-            },
-          ),
         ),
       ],
     );
@@ -804,14 +1325,59 @@ class _LockControlScreenState extends State<LockControlScreen>
           ),
           const SizedBox(height: 4),
           const Text(
-            'Hardware telemetry and connectivity configurations.',
+            'Hardware telemetry and access security configurations.',
             style: TextStyle(
               fontFamily: 'Inter',
               fontSize: 12.5,
               color: Color(0xFF7A889B),
             ),
           ),
-          const SizedBox(height: 20),
+          const SizedBox(height: 18),
+
+          // 1. Device Information Button
+          _buildSettingsMenuButton(
+            key: const Key('device_information_button'),
+            icon: Icons.info_outline_rounded,
+            title: 'DEVICE INFORMATION',
+            subtitle: 'Microcontroller, firmware & connection node',
+            onTap: _showDeviceInformationDialog,
+          ),
+          const SizedBox(height: 12),
+
+          // 2. Change Password Button
+          _buildSettingsMenuButton(
+            key: const Key('change_password_button'),
+            icon: Icons.lock_reset_rounded,
+            title: 'CHANGE PASSWORD',
+            subtitle: 'Update master credentials for your account',
+            onTap: _showChangePasswordDialog,
+          ),
+
+          const SizedBox(height: 24),
+
+          // ==========================================
+          // BIOMETRIC MANAGEMENT SECTION (ES608)
+          // ==========================================
+          const Text(
+            'BIOMETRIC CREDENTIALS',
+            style: TextStyle(
+              fontFamily: 'JetBrains Mono',
+              fontSize: 18,
+              fontWeight: FontWeight.w800,
+              letterSpacing: 1.4,
+              color: Color(0xFFF1F5F9),
+            ),
+          ),
+          const SizedBox(height: 4),
+          const Text(
+            'Manage authorized fingerprint templates stored on ES608 sensor.',
+            style: TextStyle(
+              fontFamily: 'Inter',
+              fontSize: 12.5,
+              color: Color(0xFF7A889B),
+            ),
+          ),
+          const SizedBox(height: 14),
 
           Container(
             padding: const EdgeInsets.all(16),
@@ -821,29 +1387,185 @@ class _LockControlScreenState extends State<LockControlScreen>
               border: Border.all(color: const Color(0xFF162232)),
             ),
             child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                _buildSettingRow(
-                  icon: Icons.memory_rounded,
-                  title: 'Microcontroller',
-                  value: 'Arduino Nano ESP32',
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Expanded(
+                      child: Text(
+                        'REGISTERED FINGERPRINTS',
+                        style: TextStyle(
+                          fontFamily: 'JetBrains Mono',
+                          fontSize: 11,
+                          fontWeight: FontWeight.w700,
+                          letterSpacing: 1.2,
+                          color: Color(0xFF7A889B),
+                        ),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF00D4FF).withOpacity(0.12),
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: Text(
+                        '${_device?.registeredSlots.length ?? 0} / 5 SLOTS',
+                        style: const TextStyle(
+                          fontFamily: 'JetBrains Mono',
+                          fontSize: 9.5,
+                          fontWeight: FontWeight.w700,
+                          color: Color(0xFF00D4FF),
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
-                const Divider(color: Color(0xFF162232)),
-                _buildSettingRow(
-                  icon: Icons.system_update_alt_rounded,
-                  title: 'Firmware Version',
-                  value: 'v2.4.1 (Latest)',
-                ),
-                const Divider(color: Color(0xFF162232)),
-                _buildSettingRow(
-                  icon: Icons.timer_outlined,
-                  title: 'Auto-Lock Timeout',
-                  value: '30 Seconds',
-                ),
-                const Divider(color: Color(0xFF162232)),
-                _buildSettingRow(
-                  icon: Icons.bluetooth_connected_rounded,
-                  title: 'UART Baud Rate',
-                  value: '115200 bps',
+                const SizedBox(height: 14),
+
+                if (_device?.registeredSlots.isEmpty ?? true)
+                  const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 12),
+                    child: Center(
+                      child: Text(
+                        'No fingerprints registered yet.\nTap below to enroll your first biometric credential.',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          fontFamily: 'Inter',
+                          fontSize: 12.5,
+                          color: Color(0xFF6B7C93),
+                          height: 1.4,
+                        ),
+                      ),
+                    ),
+                  )
+                else
+                  ListView.separated(
+                    shrinkWrap: true,
+                    physics: const NeverScrollableScrollPhysics(),
+                    itemCount: _device!.registeredSlots.length,
+                    separatorBuilder: (_, _) => const Divider(
+                      color: Color(0xFF162232),
+                      height: 16,
+                    ),
+                    itemBuilder: (context, index) {
+                      final slot = _device!.registeredSlots.values.elementAt(index);
+                      return Row(
+                        children: [
+                          Container(
+                            width: 36,
+                            height: 36,
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF00D4FF).withOpacity(0.12),
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: const Icon(
+                              Icons.fingerprint_rounded,
+                              size: 20,
+                              color: Color(0xFF00D4FF),
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Row(
+                                  children: [
+                                    Expanded(
+                                      child: Text(
+                                        slot.label,
+                                        style: const TextStyle(
+                                          fontFamily: 'Inter',
+                                          fontSize: 13,
+                                          fontWeight: FontWeight.w600,
+                                          color: Color(0xFFF1F5F9),
+                                        ),
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                    ),
+                                    const SizedBox(width: 6),
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                                      decoration: BoxDecoration(
+                                        color: const Color(0xFF142232),
+                                        borderRadius: BorderRadius.circular(4),
+                                      ),
+                                      child: Text(
+                                        'SLOT #${slot.slotId}',
+                                        style: const TextStyle(
+                                          fontFamily: 'JetBrains Mono',
+                                          fontSize: 9,
+                                          fontWeight: FontWeight.w700,
+                                          color: Color(0xFF00D4FF),
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                const SizedBox(height: 2),
+                                Text(
+                                  slot.formattedDate,
+                                  style: const TextStyle(
+                                    fontFamily: 'JetBrains Mono',
+                                    fontSize: 10,
+                                    color: Color(0xFF6B7C93),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.delete_outline_rounded, size: 18),
+                            color: const Color(0xFFFF5252).withOpacity(0.8),
+                            tooltip: 'Delete Slot',
+                            onPressed: () => _confirmDeleteSlot(slot.slotId, slot.label),
+                          ),
+                        ],
+                      );
+                    },
+                  ),
+
+                const SizedBox(height: 16),
+
+                // Button to launch enrollment modal
+                SizedBox(
+                  width: double.infinity,
+                  height: 48,
+                  child: ElevatedButton(
+                    key: const Key('enroll_fingerprint_button'),
+                    onPressed: () => showFingerprintEnrollmentModal(context),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF00D4FF),
+                      foregroundColor: const Color(0xFF080C10),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      elevation: 0,
+                    ),
+                    child: const FittedBox(
+                      fit: BoxFit.scaleDown,
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(Icons.add_rounded, size: 18),
+                          SizedBox(width: 6),
+                          Text(
+                            'ENROLL NEW FINGERPRINT',
+                            style: TextStyle(
+                              fontFamily: 'JetBrains Mono',
+                              fontSize: 12.5,
+                              fontWeight: FontWeight.w700,
+                              letterSpacing: 1.2,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
                 ),
               ],
             ),
@@ -854,11 +1576,14 @@ class _LockControlScreenState extends State<LockControlScreen>
             width: double.infinity,
             height: 50,
             child: OutlinedButton(
-              onPressed: () {
-                Navigator.pushReplacement(
-                  context,
-                  MaterialPageRoute(builder: (_) => const AuthScreen()),
-                );
+              onPressed: () async {
+                await AuthService.instance.signOut();
+                if (mounted) {
+                  Navigator.pushReplacement(
+                    context,
+                    MaterialPageRoute(builder: (_) => const MobileLandingScreen()),
+                  );
+                }
               },
               style: OutlinedButton.styleFrom(
                 foregroundColor: const Color(0xFFFF5252),
@@ -927,46 +1652,110 @@ class _LockControlScreenState extends State<LockControlScreen>
     );
   }
 
-  static Widget _buildSettingRow({
+  Widget _buildSettingsMenuButton({
+    required Key key,
     required IconData icon,
     required String title,
-    required String value,
+    required String subtitle,
+    required VoidCallback onTap,
   }) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 8.0),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          Expanded(
-            child: Row(
-              children: [
-                Icon(icon, size: 16, color: const Color(0xFF00D4FF)),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Text(
-                    title,
-                    style: const TextStyle(
-                      fontFamily: 'Inter',
-                      fontSize: 13,
-                      color: Color(0xFFF1F5F9),
-                    ),
-                    overflow: TextOverflow.ellipsis,
-                  ),
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        key: key,
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(10),
+        splashColor: const Color(0xFF00D4FF).withValues(alpha: 0.12),
+        highlightColor: const Color(0xFF00D4FF).withValues(alpha: 0.05),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+          decoration: BoxDecoration(
+            color: const Color(0xFF0D141F),
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: const Color(0xFF162232)),
+          ),
+          child: Row(
+            children: [
+              Container(
+                width: 40,
+                height: 40,
+                decoration: BoxDecoration(
+                  color: const Color(0xFF142232),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: const Color(0xFF1E2E42)),
                 ),
-              ],
-            ),
+                child: Icon(
+                  icon,
+                  size: 20,
+                  color: const Color(0xFF00D4FF),
+                ),
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      style: const TextStyle(
+                        fontFamily: 'JetBrains Mono',
+                        fontSize: 13,
+                        fontWeight: FontWeight.w700,
+                        letterSpacing: 1.1,
+                        color: Color(0xFFF1F5F9),
+                      ),
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      subtitle,
+                      style: const TextStyle(
+                        fontFamily: 'Inter',
+                        fontSize: 11.5,
+                        color: Color(0xFF7A889B),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const Icon(
+                Icons.chevron_right_rounded,
+                size: 22,
+                color: Color(0xFF4A5C70),
+              ),
+            ],
           ),
-          const SizedBox(width: 8),
-          Text(
-            value,
-            style: const TextStyle(
-              fontFamily: 'JetBrains Mono',
-              fontSize: 12,
-              color: Color(0xFF7A889B),
-            ),
-          ),
-        ],
+        ),
       ),
+    );
+  }
+
+  static Widget _buildInfoDialogRow(String label, String value, {bool isHighlight = false}) {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          label,
+          style: const TextStyle(
+            fontFamily: 'Inter',
+            fontSize: 12,
+            color: Color(0xFF7A889B),
+          ),
+        ),
+        const SizedBox(width: 12),
+        Flexible(
+          child: Text(
+            value,
+            textAlign: TextAlign.end,
+            style: TextStyle(
+              fontFamily: 'JetBrains Mono',
+              fontSize: 11.5,
+              fontWeight: FontWeight.w600,
+              color: isHighlight ? const Color(0xFF00E676) : const Color(0xFFF1F5F9),
+            ),
+          ),
+        ),
+      ],
     );
   }
 

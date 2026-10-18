@@ -2,68 +2,81 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:lock_sync/main.dart';
-import 'package:lock_sync/screens/auth_screen.dart';
 import 'package:lock_sync/screens/lock_control_screen.dart';
 import 'package:lock_sync/screens/system_check_screen.dart';
 
 void main() {
-  testWidgets('LockSync landing page smoke test', (WidgetTester tester) async {
-    await tester.pumpWidget(const LockSyncApp());
-
-    // Verify brand and primary elements
-    expect(find.text('Your lock, redefined.'), findsOneWidget);
-    expect(find.text('GET STARTED'), findsOneWidget);
-    expect(find.text('SIGN IN'), findsOneWidget);
-  });
-
-  testWidgets('Navigate to Sign In from Landing Screen and test toggle',
+  testWidgets('LockSync landing page renders 6-digit PIN pad and keypad',
       (WidgetTester tester) async {
     await tester.pumpWidget(const LockSyncApp());
 
-    // Tap SIGN IN on landing screen
-    await tester.tap(find.text('SIGN IN'));
+    // Verify brand and PIN elements
+    expect(find.text('Your lock, redefined.'), findsOneWidget);
+    expect(find.text('ENTER PASSWORD'), findsOneWidget);
+    expect(find.text('Enter 6-digit master passcode'), findsOneWidget);
+    expect(find.text('DEFAULT PASSCODE: 123456'), findsOneWidget);
+
+    // Verify 6 PIN dots
+    for (int i = 0; i < 6; i++) {
+      expect(find.byKey(Key('pin_dot_$i')), findsOneWidget);
+    }
+
+    // Verify 0-9 Keypad keys exist
+    for (int i = 0; i <= 9; i++) {
+      expect(find.byKey(Key('pin_key_$i')), findsOneWidget);
+    }
+    expect(find.byKey(const Key('pin_key_clear')), findsOneWidget);
+    expect(find.byKey(const Key('pin_key_backspace')), findsOneWidget);
+  });
+
+  testWidgets('Test PIN entry with wrong pin and default 123456 pin login',
+      (WidgetTester tester) async {
+    await tester.pumpWidget(const LockSyncApp());
+
+    // Type 6 digits of wrong PIN (e.g. 9 9 9 9 9 9)
+    for (int i = 0; i < 6; i++) {
+      await tester.tap(find.byKey(const Key('pin_key_9')));
+      await tester.pump(const Duration(milliseconds: 30));
+    }
+    await tester.pump();
+
+    // Verify error state
+    expect(find.text('INCORRECT PASSWORD'), findsOneWidget);
+
+    // Wait for auto-reset (650ms)
+    await tester.pump(const Duration(milliseconds: 700));
+    expect(find.text('Enter 6-digit master passcode'), findsOneWidget);
+
+    // Type the correct default PIN: 1 2 3 4 5 6
+    for (int i = 1; i <= 6; i++) {
+      await tester.tap(find.byKey(Key('pin_key_$i')));
+      await tester.pump(const Duration(milliseconds: 30));
+    }
+    await tester.pump();
+
+    // Verify success state
+    expect(find.text('ACCESS GRANTED'), findsOneWidget);
+
+    // Pump past the transition delay
+    await tester.pump(const Duration(milliseconds: 250));
     await tester.pumpAndSettle();
 
-    // Verify Sign In screen renders
-    expect(find.text('WELCOME BACK'), findsOneWidget);
-    expect(find.text('Sign in to connect with your locker.'), findsOneWidget);
-    expect(find.text('EMAIL'), findsOneWidget);
-    expect(find.text('PASSWORD'), findsOneWidget);
-    expect(find.text('FORGOT PASSWORD?'), findsOneWidget);
-    expect(find.text('USE BIOMETRICS'), findsOneWidget);
-    expect(find.text('OR CONTINUE WITH'), findsOneWidget);
-
-    // Switch to SIGN UP via footer
-    await tester.ensureVisible(find.byKey(const Key('auth_mode_toggle_footer')));
-    await tester.tap(find.byKey(const Key('auth_mode_toggle_footer')));
-    await tester.pumpAndSettle();
-
-    // Verify Sign Up fields render
-    expect(find.text('CREATE ACCOUNT'), findsWidgets);
-    expect(find.text('Create an account to pair and manage your locker.'),
-        findsOneWidget);
-    expect(find.text('NAME'), findsOneWidget);
-    expect(find.text('CONFIRM PASSWORD'), findsOneWidget);
-
-    // Switch back to SIGN IN via footer
-    await tester.ensureVisible(find.byKey(const Key('auth_mode_toggle_footer')));
-    await tester.tap(find.byKey(const Key('auth_mode_toggle_footer')));
-    await tester.pumpAndSettle();
-    expect(find.text('WELCOME BACK'), findsOneWidget);
+    // Verify navigated to SystemCheckScreen
+    expect(find.byType(SystemCheckScreen), findsOneWidget);
   });
 
   testWidgets(
-      'Submitting form navigates through SystemCheckScreen to LockControlScreen and tests lock control',
+      'Entering 123456 PIN navigates through SystemCheckScreen to LockControlScreen and tests lock control',
       (WidgetTester tester) async {
-    await tester.pumpWidget(
-      const MaterialApp(
-        home: AuthScreen(initialMode: AuthMode.signIn),
-      ),
-    );
+    await tester.pumpWidget(const LockSyncApp());
 
-    // Tap the primary action button to submit
-    await tester.tap(find.byKey(const Key('primary_action_button')));
+    // Enter 123456
+    for (int i = 1; i <= 6; i++) {
+      await tester.tap(find.byKey(Key('pin_key_$i')));
+      await tester.pump(const Duration(milliseconds: 30));
+    }
     await tester.pump();
+    await tester.pump(const Duration(milliseconds: 260));
     await tester.pump(const Duration(milliseconds: 350));
 
     // Verify SystemCheckScreen is reached with only the ring and LOCKSYNC in the center
@@ -173,10 +186,18 @@ void main() {
     await tester.tap(find.byKey(const Key('bottom_nav_SETTINGS')));
     await tester.pumpAndSettle();
 
-    // Verify settings tab content is rendered
+    // Verify settings tab content renders the 2 buttons
     expect(find.text('DEVICE SETTINGS'), findsOneWidget);
+    expect(find.text('DEVICE INFORMATION'), findsOneWidget);
+    expect(find.text('CHANGE PASSWORD'), findsOneWidget);
+
+    // Tap Device Information button to verify dialog opens
+    await tester.tap(find.byKey(const Key('device_information_button')));
+    await tester.pumpAndSettle();
     expect(find.text('Arduino Nano ESP32'), findsOneWidget);
     expect(find.text('v2.4.1 (Latest)'), findsOneWidget);
+    await tester.tap(find.byKey(const Key('close_device_info_dialog_button')));
+    await tester.pumpAndSettle();
   });
 
   testWidgets(
@@ -274,4 +295,76 @@ void main() {
     await tester.pump(const Duration(seconds: 2));
     expect(find.byType(LockControlScreen), findsNothing);
   });
+
+  testWidgets(
+      'Settings tab renders Biometric Credentials module and tests enrollment flow',
+      (WidgetTester tester) async {
+    tester.view.physicalSize = const Size(800, 1200);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: LockControlScreen(),
+      ),
+    );
+
+    // Navigate to SETTINGS tab
+    await tester.tap(find.byKey(const Key('bottom_nav_SETTINGS')));
+    await tester.pumpAndSettle();
+
+    // Verify Biometric Credentials section exists
+    expect(find.text('BIOMETRIC CREDENTIALS'), findsOneWidget);
+    expect(find.text('REGISTERED FINGERPRINTS'), findsOneWidget);
+    expect(find.byKey(const Key('enroll_fingerprint_button')), findsOneWidget);
+
+    // Scroll if needed and tap the enroll button
+    await tester.ensureVisible(find.byKey(const Key('enroll_fingerprint_button')));
+    await tester.tap(find.byKey(const Key('enroll_fingerprint_button')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 500));
+
+    // Verify modal appears
+    expect(find.text('BIOMETRIC ENROLLMENT'), findsOneWidget);
+    expect(find.text('ES608 Optical Sensor Module'), findsOneWidget);
+    expect(find.byKey(const Key('start_enrollment_button')), findsOneWidget);
+
+    // Tap START ENROLLMENT
+    await tester.ensureVisible(find.byKey(const Key('start_enrollment_button')));
+    await tester.tap(find.byKey(const Key('start_enrollment_button')));
+    await tester.pump();
+
+    // Verify ongoing enrollment UI
+    await tester.ensureVisible(find.byKey(const Key('cancel_enrollment_button')));
+    expect(find.byKey(const Key('cancel_enrollment_button')), findsOneWidget);
+
+    // Step through the simulated hardware phases
+    await tester.pump(const Duration(milliseconds: 1000)); // PLACE_FINGER_1
+    expect(find.text('SCAN 1: PLACE FINGER'), findsOneWidget);
+
+    await tester.pump(const Duration(milliseconds: 2300)); // REMOVE_FINGER
+    expect(find.text('FIRST SCAN CAPTURED'), findsOneWidget);
+
+    await tester.pump(const Duration(milliseconds: 1900)); // PLACE_FINGER_2
+    expect(find.text('SCAN 2: PLACE SAME FINGER'), findsOneWidget);
+
+    await tester.pump(const Duration(milliseconds: 2100)); // PROCESSING
+    expect(find.text('GENERATING BIOMETRIC MODEL'), findsOneWidget);
+
+    await tester.pump(const Duration(milliseconds: 2000)); // COMPLETED
+    expect(find.text('ENROLLMENT COMPLETED!'), findsOneWidget);
+    expect(find.byKey(const Key('enrollment_done_button')), findsOneWidget);
+
+    // Tap DONE to finalize workflow
+    await tester.ensureVisible(find.byKey(const Key('enrollment_done_button')));
+    await tester.tap(find.byKey(const Key('enrollment_done_button')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 500));
+
+    // Verify modal dismissed and back on Settings
+    expect(find.text('BIOMETRIC ENROLLMENT'), findsNothing);
+    expect(find.text('BIOMETRIC CREDENTIALS'), findsOneWidget);
+  });
 }
+
