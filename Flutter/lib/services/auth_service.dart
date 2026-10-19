@@ -7,11 +7,7 @@ class AuthResult {
   final String? errorMessage;
   final User? user;
 
-  const AuthResult({
-    required this.success,
-    this.errorMessage,
-    this.user,
-  });
+  const AuthResult({required this.success, this.errorMessage, this.user});
 }
 
 class AuthService {
@@ -21,31 +17,13 @@ class AuthService {
 
   AuthService._internal();
 
-  /// Default 6-digit master passcode for LockSync access
-  static String masterPin = '123456';
+  /// Local Master PIN passcode (default: 123456)
+  static String _masterPin = '123456';
 
-  bool verifyPin(String pin) {
-    final clean = pin.trim();
-    if (clean == masterPin) {
-      _mockUserId = 'usr_operator';
-      _mockUserEmail = 'operator@locksync.internal';
-      _mockUserName = 'OPERATOR';
-      _fallbackAuthStateController.add(_mockUserId);
-      return true;
-    }
-    return false;
-  }
+  /// Session flag indicating whether the user unlocked the app via PIN
+  bool _isAppUnlocked = false;
 
-  void updateMasterPin(String newPin) {
-    masterPin = newPin.trim();
-  }
-
-  final StreamController<String?> _fallbackAuthStateController =
-      StreamController<String?>.broadcast();
-
-  String? _mockUserId;
-  String? _mockUserEmail;
-  String? _mockUserName;
+  bool get isAppUnlocked => _isAppUnlocked;
 
   FirebaseAuth? get _auth {
     if (FirebaseService.isInitialized) {
@@ -58,237 +36,92 @@ class AuthService {
     return null;
   }
 
-  bool get isAuthenticated {
+  /// Get current Firebase anonymous user ID
+  String? get currentUserId => _auth?.currentUser?.uid ?? 'anon_operator';
+
+  /// Stream Firebase auth state changes
+  Stream<User?> get authStateChanges {
     final auth = _auth;
     if (auth != null) {
-      return auth.currentUser != null;
+      return auth.authStateChanges();
     }
-    return _mockUserId != null;
+    return Stream.value(null);
   }
 
-  String? get currentUserId => _auth?.currentUser?.uid ?? _mockUserId;
-  String? get currentUserEmail => _auth?.currentUser?.email ?? _mockUserEmail;
-  String? get currentUserName =>
-      _auth?.currentUser?.displayName ?? _mockUserName ?? 'LockSync Operator';
-
-  Stream<String?> get authStateChanges {
-    final auth = _auth;
-    if (auth != null) {
-      return auth.authStateChanges().map((user) => user?.uid);
-    }
-    return _fallbackAuthStateController.stream;
+  /// Unlocks the app after a successful biometric check (no PIN replay).
+  Future<AuthResult> unlockWithBiometrics() async {
+    _isAppUnlocked = true;
+    await ensureAnonymousAuth();
+    return AuthResult(success: true, user: _auth?.currentUser);
   }
 
-  Future<AuthResult> signIn({
-    required String email,
-    required String password,
-  }) async {
-    final cleanEmail = email.trim();
-    if (cleanEmail.isEmpty || !cleanEmail.contains('@')) {
-      return const AuthResult(
-        success: false,
-        errorMessage: 'Please enter a valid email address.',
-      );
-    }
-    if (password.trim().isEmpty) {
-      return const AuthResult(
-        success: false,
-        errorMessage: 'Please enter your password.',
-      );
+  /// Silently signs in to Firebase anonymously in the background so RTDB rules work
+  Future<AuthResult> ensureAnonymousAuth() async {
+    final auth = _auth;
+    if (auth == null) {
+      return const AuthResult(success: true);
     }
 
-    final auth = _auth;
-    if (auth != null) {
-      try {
-        final credential = await auth.signInWithEmailAndPassword(
-          email: cleanEmail,
-          password: password,
-        );
+    try {
+      if (auth.currentUser == null) {
+        final credential = await auth.signInAnonymously();
+
         return AuthResult(success: true, user: credential.user);
-      } on FirebaseAuthException catch (e) {
-        return AuthResult(
-          success: false,
-          errorMessage: _formatAuthErrorMessage(e.code, e.message),
-        );
-      } catch (e) {
-        return AuthResult(
-          success: false,
-          errorMessage: 'Authentication error: ${e.toString()}',
-        );
       }
+
+      return AuthResult(success: true, user: auth.currentUser);
+    } catch (e) {
+      return AuthResult(
+        success: false,
+        errorMessage: 'Anonymous authentication failed: ${e.toString()}',
+      );
+    }
+  }
+
+  /// Verifies the PIN entered on the app screen and activates the anonymous Firebase session
+  Future<AuthResult> verifyPinAndUnlock(String pin) async {
+    final clean = pin.trim();
+    if (clean == _masterPin) {
+      _isAppUnlocked = true;
+
+      // Silently authenticate with Firebase Anonymously for Realtime Database stream permissions
+      await ensureAnonymousAuth();
+
+      return AuthResult(success: true, user: _auth?.currentUser);
     }
 
-    // Dynamic in-memory authentication when Firebase credentials are not yet configured
-    _mockUserId = 'usr_${cleanEmail.hashCode.abs()}';
-    _mockUserEmail = cleanEmail;
-    _mockUserName = cleanEmail.split('@').first.toUpperCase();
-    _fallbackAuthStateController.add(_mockUserId);
+    return const AuthResult(
+      success: false,
+      errorMessage: 'Incorrect PIN passcode. Please try again.',
+    );
+  }
+
+  AuthResult updateMasterPin({
+    required String currentPin,
+    required String newPin,
+  }) {
+    if (currentPin.trim() != _masterPin) {
+      return const AuthResult(
+        success: false,
+        errorMessage: 'Current PIN is incorrect.',
+      );
+    }
+
+    final cleanNew = newPin.trim();
+
+    if (cleanNew.length < 4 || cleanNew.length > 8) {
+      return const AuthResult(
+        success: false,
+        errorMessage: 'New PIN must be between 4 and 8 digits.',
+      );
+    }
+
+    _masterPin = cleanNew;
 
     return const AuthResult(success: true);
   }
 
-  Future<AuthResult> signUp({
-    required String name,
-    required String email,
-    required String password,
-  }) async {
-    final cleanName = name.trim();
-    final cleanEmail = email.trim();
-
-    if (cleanName.isEmpty) {
-      return const AuthResult(
-        success: false,
-        errorMessage: 'Please enter your full name.',
-      );
-    }
-    if (cleanEmail.isEmpty || !cleanEmail.contains('@')) {
-      return const AuthResult(
-        success: false,
-        errorMessage: 'Please enter a valid email address.',
-      );
-    }
-    if (password.length < 6) {
-      return const AuthResult(
-        success: false,
-        errorMessage: 'Password must be at least 6 characters.',
-      );
-    }
-
-    final auth = _auth;
-    if (auth != null) {
-      try {
-        final credential = await auth.createUserWithEmailAndPassword(
-          email: cleanEmail,
-          password: password,
-        );
-        if (cleanName.isNotEmpty) {
-          await credential.user?.updateDisplayName(cleanName);
-        }
-        return AuthResult(success: true, user: credential.user);
-      } on FirebaseAuthException catch (e) {
-        return AuthResult(
-          success: false,
-          errorMessage: _formatAuthErrorMessage(e.code, e.message),
-        );
-      } catch (e) {
-        return AuthResult(
-          success: false,
-          errorMessage: 'Sign up error: ${e.toString()}',
-        );
-      }
-    }
-
-    // Dynamic in-memory registration when Firebase credentials are not yet configured
-    _mockUserId = 'usr_${cleanEmail.hashCode.abs()}';
-    _mockUserEmail = cleanEmail;
-    _mockUserName = cleanName;
-    _fallbackAuthStateController.add(_mockUserId);
-
-    return const AuthResult(success: true);
-  }
-
-  Future<AuthResult> sendPasswordResetEmail(String email) async {
-    final cleanEmail = email.trim();
-    if (cleanEmail.isEmpty || !cleanEmail.contains('@')) {
-      return const AuthResult(
-        success: false,
-        errorMessage: 'Please enter a valid email address to reset password.',
-      );
-    }
-
-    final auth = _auth;
-    if (auth != null) {
-      try {
-        await auth.sendPasswordResetEmail(email: cleanEmail);
-        return const AuthResult(success: true);
-      } on FirebaseAuthException catch (e) {
-        return AuthResult(
-          success: false,
-          errorMessage: _formatAuthErrorMessage(e.code, e.message),
-        );
-      } catch (e) {
-        return AuthResult(
-          success: false,
-          errorMessage: 'Password reset error: ${e.toString()}',
-        );
-      }
-    }
-
-    // Dynamic success confirmation in unconfigured / test environment
-    return const AuthResult(success: true);
-  }
-
-  Future<AuthResult> updatePassword(String newPassword) async {
-    final cleanPassword = newPassword.trim();
-    if (cleanPassword.length < 6) {
-      return const AuthResult(
-        success: false,
-        errorMessage: 'Password must be at least 6 characters.',
-      );
-    }
-
-    masterPin = cleanPassword;
-
-    final auth = _auth;
-    if (auth != null && auth.currentUser != null) {
-      try {
-        await auth.currentUser!.updatePassword(cleanPassword);
-        return const AuthResult(success: true);
-      } on FirebaseAuthException catch (e) {
-        if (e.code == 'requires-recent-login') {
-          return const AuthResult(
-            success: false,
-            errorMessage: 'Security verification expired. Please sign in again before changing password.',
-          );
-        }
-        return AuthResult(
-          success: false,
-          errorMessage: _formatAuthErrorMessage(e.code, e.message),
-        );
-      } catch (e) {
-        return AuthResult(
-          success: false,
-          errorMessage: 'Password update error: ${e.toString()}',
-        );
-      }
-    }
-
-    // Dynamic success confirmation for development / test mode
-    return const AuthResult(success: true);
-  }
-
-  Future<void> signOut() async {
-    final auth = _auth;
-    if (auth != null) {
-      await auth.signOut();
-    }
-    _mockUserId = null;
-    _mockUserEmail = null;
-    _mockUserName = null;
-    _fallbackAuthStateController.add(null);
-  }
-
-  String _formatAuthErrorMessage(String code, String? defaultMessage) {
-    switch (code) {
-      case 'user-not-found':
-        return 'No registered account found with this email.';
-      case 'wrong-password':
-      case 'invalid-credential':
-        return 'Incorrect password. Please verify credentials.';
-      case 'email-already-in-use':
-        return 'An account already exists with this email address.';
-      case 'weak-password':
-        return 'The password entered is too weak (minimum 6 characters).';
-      case 'invalid-email':
-        return 'The email format is invalid.';
-      case 'user-disabled':
-        return 'This account has been disabled by security policies.';
-      case 'too-many-requests':
-        return 'Too many attempts. Please wait a moment before trying again.';
-      case 'network-request-failed':
-        return 'Network connection error. Check your internet connectivity.';
-      default:
-        return defaultMessage ?? 'Authentication failed ($code).';
-    }
+  void lockApp() {
+    _isAppUnlocked = false;
   }
 }

@@ -1,547 +1,327 @@
 import 'dart:async';
 import 'package:firebase_database/firebase_database.dart';
+import 'package:flutter/foundation.dart' show debugPrint;
 import '../models/lock_model.dart';
 import 'firebase_service.dart';
+
+abstract final class LockServiceConstants {
+  static const String defaultLockId = 'locker_01';
+  static const String lockersNode = 'lockers';
+  static const String historyNode = 'history';
+  static const String registeredSlotsNode = 'registeredSlots';
+}
 
 class LockService {
   static final LockService _instance = LockService._internal();
   factory LockService() => _instance;
   static LockService get instance => _instance;
 
-  LockService._internal() {
-    _initFallbackState();
+  LockService._internal();
+
+  DatabaseReference? _lockRef([
+    String lockId = LockServiceConstants.defaultLockId,
+  ]) {
+    if (!FirebaseService.isInitialized) return null;
+    try {
+      final cleanId = lockId.toLowerCase();
+      return FirebaseDatabase.instance.ref(
+        '${LockServiceConstants.lockersNode}/$cleanId',
+      );
+    } catch (_) {
+      return null;
+    }
   }
 
-  static const String defaultLockId = 'locker_01';
-
-  // Fallback / in-memory reactive state
-  late LockDevice _currentDevice;
-  final List<ActivityLogEntry> _historyEntries = [];
-  final StreamController<LockDevice> _deviceStreamController =
-      StreamController<LockDevice>.broadcast();
-  final StreamController<List<ActivityLogEntry>> _historyStreamController =
-      StreamController<List<ActivityLogEntry>>.broadcast();
-  final StreamController<EnrollmentTelemetry> _enrollmentStreamController =
-      StreamController<EnrollmentTelemetry>.broadcast();
-
-  Timer? _simulationTimer1;
-  Timer? _simulationTimer2;
-  Timer? _simulationTimer3;
-  Timer? _simulationTimer4;
-  Timer? _simulationTimer5;
-
-  void _initFallbackState() {
+  /// Pushes one audit entry under lockers/<id>/history.
+  /// [build] receives the generated push key and the current time.
+  Future<void> _writeHistory(
+    DatabaseReference lockRef,
+    ActionsHistory Function(String id, DateTime now) build,
+  ) async {
     final now = DateTime.now();
-
-    final initialSlots = <String, FingerprintSlot>{
-      'slot_1': FingerprintSlot(
-        slotId: 1,
-        label: 'Right Thumb',
-        assignedUser: 'USER_2026_ST99',
-        registeredAt: now.subtract(const Duration(days: 3)),
-        workflowId: 'enroll_sess_20261014_001',
-      ),
-    };
-
-    _currentDevice = LockDevice(
-      id: defaultLockId,
-      name: 'LOCKER 01',
-      isLocked: true,
-      isOnline: true,
-      signal: 'STRONG',
-      battery: 98,
-      autoLockTimeout: 30,
-      microcontroller: 'Arduino Nano ESP32',
-      firmware: 'v2.4.1 (Latest)',
-      baudRate: 115200,
-      lastUpdated: now,
-      updatedBy: 'System',
-      doorOpen: false,
-      tamperAlert: false,
-      enrollStatus: EnrollStatus.idle,
-      workflowId: null,
-      lastAction: 'INITIALIZED',
-      registeredSlots: initialSlots,
+    final historyRef = lockRef.child(LockServiceConstants.historyNode).push();
+    final entry = build(
+      historyRef.key ?? 'evt_${now.millisecondsSinceEpoch}',
+      now,
     );
-
-    // Initial dynamic recent activity
-    _historyEntries.addAll([
-      ActivityLogEntry(
-        id: 'evt_1',
-        title: 'Locker unlocked',
-        subtitle: 'Biometric access (Slot #1)',
-        timestamp: now.subtract(const Duration(minutes: 18)),
-        isUnlock: true,
-        source: 'hardware',
-      ),
-      ActivityLogEntry(
-        id: 'evt_2',
-        title: 'Locker secured',
-        subtitle: 'Auto-lock timer (30s)',
-        timestamp: now.subtract(const Duration(hours: 2, minutes: 45)),
-        isUnlock: false,
-        source: 'hardware',
-      ),
-      ActivityLogEntry(
-        id: 'evt_3',
-        title: 'Locker secured',
-        subtitle: 'Manual command via app',
-        timestamp: now.subtract(const Duration(days: 1, hours: 3)),
-        isUnlock: false,
-        source: 'app',
-      ),
-      ActivityLogEntry(
-        id: 'evt_4',
-        title: 'Locker unlocked',
-        subtitle: 'NFC Master Key',
-        timestamp: now.subtract(const Duration(days: 1, hours: 7)),
-        isUnlock: true,
-        source: 'hardware',
-      ),
-      ActivityLogEntry(
-        id: 'evt_5',
-        title: 'System online',
-        subtitle: 'Arduino ESP32 handshake',
-        timestamp: now.subtract(const Duration(days: 1, hours: 14)),
-        isUnlock: false,
-        source: 'system',
-      ),
-    ]);
+    await historyRef.set(entry.toMap());
   }
 
-  FirebaseDatabase? get _database {
-    if (FirebaseService.isInitialized) {
-      try {
-        return FirebaseDatabase.instance;
-      } catch (_) {
-        return null;
+  /// Real-time stream of locker state directly from Firebase RTDB.
+  /// Emits `null` when Firebase is initializing or data is unavailable (triggers UI loading state).
+  Stream<LockDevice?> streamLock([
+    String lockId = LockServiceConstants.defaultLockId,
+  ]) {
+    final ref = _lockRef(lockId);
+    if (ref == null) {
+      return Stream.value(null);
+    }
+
+    return ref.onValue.map((event) {
+      final val = event.snapshot.value;
+      if (val is Map) {
+        return LockDevice.fromMap(lockId, val);
       }
-    }
-    return null;
-  }
-
-  DatabaseReference? _lockRef([String lockId = defaultLockId]) {
-    final cleanId = lockId.toLowerCase();
-    return _database?.ref('lockers/$cleanId');
-  }
-
-  /// Real-time stream of lock status and hardware telemetry
-  Stream<LockDevice> streamLock([String lockId = defaultLockId]) {
-    final db = _database;
-    if (db != null) {
-      final cleanId = lockId.toLowerCase();
-      return db.ref('lockers/$cleanId').onValue.map((event) {
-        final val = event.snapshot.value;
-        if (val is Map) {
-          return LockDevice.fromMap(lockId, val);
-        }
-        return _currentDevice;
-      });
-    }
-
-    return Stream<LockDevice>.multi((controller) {
-      controller.add(_currentDevice);
-      final subscription = _deviceStreamController.stream.listen(
-        controller.add,
-        onError: controller.addError,
-        onDone: controller.close,
-      );
-      controller.onCancel = () => subscription.cancel();
+      return null;
     });
   }
 
-  /// Real-time stream of audit history entries
-  Stream<List<ActivityLogEntry>> streamHistory([String lockId = defaultLockId]) {
-    final db = _database;
-    if (db != null) {
-      final cleanId = lockId.toLowerCase();
-      return db.ref('lockers/$cleanId/history').onValue.map((event) {
-        final val = event.snapshot.value;
-        if (val is Map) {
-          final entries = <ActivityLogEntry>[];
-          val.forEach((key, mapData) {
-            if (mapData is Map) {
-              entries.add(ActivityLogEntry.fromMap(key.toString(), mapData));
-            }
-          });
-          entries.sort((a, b) => b.timestamp.compareTo(a.timestamp));
-          return entries;
-        }
-        return List<ActivityLogEntry>.unmodifiable(_historyEntries);
-      });
+  /// Real-time stream of audit action history entries directly from Firebase RTDB.
+  Stream<List<ActionsHistory>> streamHistory([
+    String lockId = LockServiceConstants.defaultLockId,
+  ]) {
+    final ref = _lockRef(lockId);
+    if (ref == null) {
+      return Stream.value(const []);
     }
 
-    return Stream<List<ActivityLogEntry>>.multi((controller) {
-      controller.add(List<ActivityLogEntry>.unmodifiable(_historyEntries));
-      final subscription = _historyStreamController.stream.listen(
-        controller.add,
-        onError: controller.addError,
-        onDone: controller.close,
-      );
-      controller.onCancel = () => subscription.cancel();
+    return ref.child(LockServiceConstants.historyNode).onValue.map((event) {
+      final val = event.snapshot.value;
+      if (val is Map) {
+        final entries = <ActionsHistory>[];
+        val.forEach((key, mapData) {
+          if (mapData is Map) {
+            entries.add(ActionsHistory.fromMap(key.toString(), mapData));
+          }
+        });
+        entries.sort((a, b) => b.timestamp.compareTo(a.timestamp));
+        return entries;
+      }
+      return const [];
     });
   }
 
-  /// Real-time stream of biometric enrollment lifecycle telemetry
-  Stream<EnrollmentTelemetry> streamEnrollment([String lockId = defaultLockId]) {
-    final db = _database;
-    if (db != null) {
-      final cleanId = lockId.toLowerCase();
-      return db.ref('lockers/$cleanId').onValue.map((event) {
-        final val = event.snapshot.value;
-        if (val is Map) {
-          final statusStr = val['enrollStatus']?.toString();
-          final workflowId = val['workflowId']?.toString();
-          final lastAction = val['lastAction']?.toString();
-          return EnrollmentTelemetry(
-            status: EnrollStatus.fromString(statusStr),
-            workflowId: workflowId,
-            lastAction: lastAction,
-          );
-        }
-        return EnrollmentTelemetry(
-          status: _currentDevice.enrollStatus,
-          workflowId: _currentDevice.workflowId,
-          lastAction: _currentDevice.lastAction,
-        );
-      });
-    }
-
-    return Stream<EnrollmentTelemetry>.multi((controller) {
-      controller.add(EnrollmentTelemetry(
-        status: _currentDevice.enrollStatus,
-        workflowId: _currentDevice.workflowId,
-        lastAction: _currentDevice.lastAction,
-      ));
-      final subscription = _enrollmentStreamController.stream.listen(
-        controller.add,
-        onError: controller.addError,
-        onDone: controller.close,
-      );
-      controller.onCancel = () => subscription.cancel();
-    });
-  }
-
-  /// Toggles or sets the lock state and pushes audit trail entry to Firebase
-  Future<void> setLockState(
-    bool isLocked, {
-    String lockId = defaultLockId,
-    bool isBiometric = false,
-    String? userEmail,
+  /// Toggles the lock state indefinitely on Firebase RTDB
+  Future<bool> toggleLock(
+    bool currentLockState, {
+    String lockId = LockServiceConstants.defaultLockId,
   }) async {
-    final now = DateTime.now();
-    final trigger = isBiometric ? 'Biometric access' : 'LockSync app control';
-    final actionTitle = isLocked ? 'Locker secured' : 'Locker unlocked';
-    final workflowId = 'remote_cmd_${now.millisecondsSinceEpoch}';
-
     final ref = _lockRef(lockId);
-    if (ref != null) {
-      try {
-        await ref.update({
-          'isLocked': isLocked,
-          'workflowId': workflowId,
-          'lastAction': isLocked ? 'LOCKED_VIA_APP' : 'UNLOCKED_VIA_APP',
-          'lastUpdated': ServerValue.timestamp,
-          'updatedBy': userEmail ?? (isBiometric ? 'Biometrics' : 'App User'),
-        });
+    if (ref == null) return false;
 
-        final historyRef = ref.child('history').push();
-        await historyRef.set({
-          'title': actionTitle,
-          'subtitle': trigger,
-          'timestamp': ServerValue.timestamp,
-          'isUnlock': !isLocked,
-          'source': isBiometric ? 'biometric' : 'app',
-        });
-        return;
-      } catch (_) {
-        // Fall through to in-memory state update
-      }
+    final targetState = !currentLockState;
+    final action = targetState ? Actions.REMOTE_LOCK : Actions.REMOTE_UNLOCK;
+
+    try {
+      await ref.update({'isLocked': targetState, 'lastAction': action.value});
+
+      await _writeHistory(
+        ref,
+        (id, now) => StandardActionHistory(
+          id: id,
+          action: action,
+          description: 'Remote trigger via LockSync app',
+          timestamp: now,
+        ),
+      );
+      return true;
+    } catch (_) {
+      return false;
     }
-
-    _currentDevice = _currentDevice.copyWith(
-      isLocked: isLocked,
-      workflowId: workflowId,
-      lastAction: isLocked ? 'LOCKED_VIA_APP' : 'UNLOCKED_VIA_APP',
-      lastUpdated: now,
-      updatedBy: userEmail ?? (isBiometric ? 'Biometrics' : 'App User'),
-    );
-    _deviceStreamController.add(_currentDevice);
-
-    final newEvent = ActivityLogEntry(
-      id: 'evt_${now.millisecondsSinceEpoch}',
-      title: actionTitle,
-      subtitle: trigger,
-      timestamp: now,
-      isUnlock: !isLocked,
-      source: isBiometric ? 'biometric' : 'app',
-    );
-    _historyEntries.insert(0, newEvent);
-    _historyStreamController.add(List.unmodifiable(_historyEntries));
   }
 
-  /// Initiates biometric fingerprint enrollment workflow as specified in Section 1
-  Future<String> startEnrollment({
-    required String label,
-    String? assignedUser,
-    String lockId = defaultLockId,
+  /// Deletes every entry under lockers/<id>/history.
+  Future<bool> clearHistory([
+    String lockId = LockServiceConstants.defaultLockId,
+  ]) async {
+    final ref = _lockRef(lockId);
+    if (ref == null) return false;
+
+    try {
+      await ref.child(LockServiceConstants.historyNode).remove();
+      return true;
+    } catch (e) {
+      debugPrint('clearHistory failed: $e');
+      return false;
+    }
+  }
+
+  /// Clears unauthorized attempt security alerts on Firebase RTDB
+  Future<bool> disarmUnauthorizedAttempt({
+    String lockId = LockServiceConstants.defaultLockId,
   }) async {
-    _cancelSimulationTimers();
-
-    final now = DateTime.now();
-    final workflowId = 'enroll_sess_${now.millisecondsSinceEpoch}';
-
     final ref = _lockRef(lockId);
-    if (ref != null) {
-      try {
-        await ref.update({
-          'enrollStatus': 'START_ENROLL',
-          'workflowId': workflowId,
-          'lastAction': 'ENROLLMENT_REQUESTED',
-        });
-        return workflowId;
-      } catch (_) {}
-    }
+    if (ref == null) return false;
 
-    // In-memory simulation pipeline for testing and fallback mode
-    _currentDevice = _currentDevice.copyWith(
-      enrollStatus: EnrollStatus.startEnroll,
-      workflowId: workflowId,
-      lastAction: 'ENROLLMENT_REQUESTED',
-    );
-    _emitCurrentEnrollment();
+    const action = Actions.UNAUTHORIZED_ATTEMPT;
 
-    // Step 2 Phase A: PLACE_FINGER_1 (AWAITING_FIRST_SCAN)
-    _simulationTimer1 = Timer(const Duration(milliseconds: 900), () {
-      _currentDevice = _currentDevice.copyWith(
-        enrollStatus: EnrollStatus.placeFinger1,
-        lastAction: 'AWAITING_FIRST_SCAN',
-      );
-      _emitCurrentEnrollment();
-
-      // Step 2 Phase B: REMOVE_FINGER (FIRST_SCAN_CAPTURED)
-      _simulationTimer2 = Timer(const Duration(milliseconds: 2200), () {
-        _currentDevice = _currentDevice.copyWith(
-          enrollStatus: EnrollStatus.removeFinger,
-          lastAction: 'FIRST_SCAN_CAPTURED',
-        );
-        _emitCurrentEnrollment();
-
-        // Step 2 Phase C: PLACE_FINGER_2 (AWAITING_SECOND_SCAN)
-        _simulationTimer3 = Timer(const Duration(milliseconds: 1800), () {
-          _currentDevice = _currentDevice.copyWith(
-            enrollStatus: EnrollStatus.placeFinger2,
-            lastAction: 'AWAITING_SECOND_SCAN',
-          );
-          _emitCurrentEnrollment();
-
-          // Step 2 Phase D: PROCESSING (GENERATING_BIOMETRIC_MODEL)
-          _simulationTimer4 = Timer(const Duration(milliseconds: 2000), () {
-            _currentDevice = _currentDevice.copyWith(
-              enrollStatus: EnrollStatus.processing,
-              lastAction: 'GENERATING_BIOMETRIC_MODEL',
-            );
-            _emitCurrentEnrollment();
-
-            // Step 3: COMPLETED (BIOMETRIC_ENROLLED_SLOT_X)
-            _simulationTimer5 = Timer(const Duration(milliseconds: 1800), () {
-              // Find next available slot ID
-              int nextSlotId = 1;
-              while (_currentDevice.registeredSlots.containsKey('slot_$nextSlotId')) {
-                nextSlotId++;
-              }
-
-              final newSlot = FingerprintSlot(
-                slotId: nextSlotId,
-                label: label.trim().isNotEmpty ? label.trim() : 'Fingerprint $nextSlotId',
-                assignedUser: assignedUser ?? 'USER_${now.year}_ST99',
-                registeredAt: DateTime.now(),
-                workflowId: workflowId,
-              );
-
-              final updatedSlots = Map<String, FingerprintSlot>.from(
-                _currentDevice.registeredSlots,
-              );
-              updatedSlots['slot_$nextSlotId'] = newSlot;
-
-              _currentDevice = _currentDevice.copyWith(
-                enrollStatus: EnrollStatus.completed,
-                lastAction: 'BIOMETRIC_ENROLLED_SLOT_$nextSlotId',
-                registeredSlots: updatedSlots,
-              );
-              _emitCurrentEnrollment();
-            });
-          });
-        });
+    try {
+      await ref.update({
+        'unauthorizedAttempt': false,
+        'tamperAlert': false,
+        'lastAction': action.value,
       });
-    });
 
-    return workflowId;
-  }
-
-  /// Manually advance to next enrollment step (useful for instant interactive UI testing)
-  void simulateAdvanceEnrollmentStep() {
-    _cancelSimulationTimers();
-    final current = _currentDevice.enrollStatus;
-
-    if (current == EnrollStatus.startEnroll) {
-      _currentDevice = _currentDevice.copyWith(
-        enrollStatus: EnrollStatus.placeFinger1,
-        lastAction: 'AWAITING_FIRST_SCAN',
+      await _writeHistory(
+        ref,
+        (id, now) => StandardActionHistory(
+          id: id,
+          action: action,
+          description: 'Unauthorized attempt alert disarmed by app',
+          timestamp: now,
+        ),
       );
-    } else if (current == EnrollStatus.placeFinger1) {
-      _currentDevice = _currentDevice.copyWith(
-        enrollStatus: EnrollStatus.removeFinger,
-        lastAction: 'FIRST_SCAN_CAPTURED',
-      );
-    } else if (current == EnrollStatus.removeFinger) {
-      _currentDevice = _currentDevice.copyWith(
-        enrollStatus: EnrollStatus.placeFinger2,
-        lastAction: 'AWAITING_SECOND_SCAN',
-      );
-    } else if (current == EnrollStatus.placeFinger2) {
-      _currentDevice = _currentDevice.copyWith(
-        enrollStatus: EnrollStatus.processing,
-        lastAction: 'GENERATING_BIOMETRIC_MODEL',
-      );
-    } else if (current == EnrollStatus.processing) {
-      int nextSlotId = 1;
-      while (_currentDevice.registeredSlots.containsKey('slot_$nextSlotId')) {
-        nextSlotId++;
-      }
-      final newSlot = FingerprintSlot(
-        slotId: nextSlotId,
-        label: 'Fingerprint $nextSlotId',
-        assignedUser: 'OPERATOR',
-        registeredAt: DateTime.now(),
-        workflowId: _currentDevice.workflowId ?? 'enroll_manual',
-      );
-      final updatedSlots = Map<String, FingerprintSlot>.from(
-        _currentDevice.registeredSlots,
-      );
-      updatedSlots['slot_$nextSlotId'] = newSlot;
-
-      _currentDevice = _currentDevice.copyWith(
-        enrollStatus: EnrollStatus.completed,
-        lastAction: 'BIOMETRIC_ENROLLED_SLOT_$nextSlotId',
-        registeredSlots: updatedSlots,
-      );
+      return true;
+    } catch (_) {
+      return false;
     }
-    _emitCurrentEnrollment();
   }
 
-  /// Resets / Finalizes the active workflow state as specified in Section 5
-  Future<void> finalizeOrResetWorkflow([String lockId = defaultLockId]) async {
-    _cancelSimulationTimers();
+  /// Reserves a history key for a new enrollment session (synchronous).
+  /// Returns null when Firebase isn't available.
+  String? newEnrollmentSessionId([
+    String lockId = LockServiceConstants.defaultLockId,
+  ]) {
+    return _lockRef(lockId)?.child(LockServiceConstants.historyNode).push().key;
+  }
 
+  /// Triggers hardware fingerprint enrollment directly on ESP32 via RTDB and
+  /// opens a history session (one entry per attempt) seeded with START_ENROLL.
+  /// The firmware should read `enrollLabel` and store it as the slot label.
+  Future<bool> startEnrollment({
+    required String sessionId,
+    String label = 'Fingerprint',
+    String lockId = LockServiceConstants.defaultLockId,
+  }) async {
     final ref = _lockRef(lockId);
-    if (ref != null) {
-      try {
-        await ref.update({
-          'enrollStatus': 'IDLE',
-          'workflowId': null,
-          'lastAction': 'WORKFLOW_FINALIZED',
-        });
-        return;
-      } catch (_) {}
+    if (ref == null) return false;
+
+    const status = EnrollStatus.START_ENROLL;
+
+    try {
+      await ref.update({
+        'enrollStatus': status.value,
+        'enrollLabel': label,
+        'lastAction': status.value,
+      });
+    } catch (e) {
+      debugPrint('startEnrollment update failed: $e');
+      return false;
     }
 
-    _currentDevice = _currentDevice.copyWith(
-      enrollStatus: EnrollStatus.idle,
-      workflowId: null,
-      lastAction: 'WORKFLOW_FINALIZED',
-    );
-    _emitCurrentEnrollment();
+    // Separate try: a history failure must never block the enrollment itself.
+    try {
+      final sessionRef = ref.child(
+        '${LockServiceConstants.historyNode}/$sessionId',
+      );
+      final nowMs = DateTime.now().millisecondsSinceEpoch;
+      final firstEventKey = sessionRef.child('events').push().key!;
+
+      await sessionRef.set({
+        'action': Actions.ENROLLMENT.value,
+        'enrollStatus': status.value,
+        'description': 'Enrollment for "$label"',
+        'timestamp': nowMs,
+        'events': {
+          firstEventKey: {'status': status.value, 'timestamp': nowMs},
+        },
+      });
+    } catch (e) {
+      debugPrint('startEnrollment history write failed: $e');
+    }
+
+    return true;
   }
 
-  /// Removes a fingerprint slot from Firebase RTDB and local memory
-  Future<void> deleteFingerprintSlot(int slotId, [String lockId = defaultLockId]) async {
+  /// Appends one status event to an enrollment session. Pass [slotID] when
+  /// the enrollment completes.
+  Future<bool> logEnrollmentEvent(
+    String sessionId,
+    EnrollStatus status, {
+    int? slotID,
+    String lockId = LockServiceConstants.defaultLockId,
+  }) async {
     final ref = _lockRef(lockId);
-    if (ref != null) {
-      try {
-        await ref.child('registeredSlots/slot_$slotId').remove();
-        return;
-      } catch (_) {}
+    if (ref == null) return false;
+
+    try {
+      final sessionRef = ref.child(
+        '${LockServiceConstants.historyNode}/$sessionId',
+      );
+      final eventKey = sessionRef.child('events').push().key!;
+
+      // One multi-path update: new event + latest status (+ slot on completion).
+      await sessionRef.update({
+        'events/$eventKey': {
+          'status': status.value,
+          'timestamp': DateTime.now().millisecondsSinceEpoch,
+        },
+        'enrollStatus': status.value,
+        if (slotID != null) 'slotID': slotID,
+      });
+      return true;
+    } catch (e) {
+      debugPrint('logEnrollmentEvent failed: $e');
+      return false;
     }
-
-    final updatedSlots = Map<String, FingerprintSlot>.from(
-      _currentDevice.registeredSlots,
-    );
-    updatedSlots.remove('slot_$slotId');
-    _currentDevice = _currentDevice.copyWith(registeredSlots: updatedSlots);
-    _deviceStreamController.add(_currentDevice);
   }
 
-  void _emitCurrentEnrollment() {
-    _deviceStreamController.add(_currentDevice);
-    _enrollmentStreamController.add(EnrollmentTelemetry(
-      status: _currentDevice.enrollStatus,
-      workflowId: _currentDevice.workflowId,
-      lastAction: _currentDevice.lastAction,
-    ));
+  /// Resets active enrollment state back to IDLE
+  Future<bool> finalizeOrResetWorkflow([
+    String lockId = LockServiceConstants.defaultLockId,
+  ]) async {
+    final ref = _lockRef(lockId);
+    if (ref == null) return false;
+
+    const status = EnrollStatus.IDLE;
+
+    try {
+      await ref.update({
+        'enrollStatus': status.value,
+        'lastAction': status.value,
+      });
+      return true;
+    } catch (_) {
+      return false;
+    }
   }
 
-  void _cancelSimulationTimers() {
-    _simulationTimer1?.cancel();
-    _simulationTimer2?.cancel();
-    _simulationTimer3?.cancel();
-    _simulationTimer4?.cancel();
-    _simulationTimer5?.cancel();
+  /// Requests removal of a fingerprint slot on ESP32 memory and Firebase
+  Future<bool> deleteFingerprintSlot(
+    int slotID, [
+    String lockId = LockServiceConstants.defaultLockId,
+  ]) async {
+    final ref = _lockRef(lockId);
+    if (ref == null) return false;
+
+    try {
+      await ref.update({'deleteSlot': slotID});
+      await ref
+          .child('${LockServiceConstants.registeredSlotsNode}/slot_$slotID')
+          .remove();
+
+      await _writeHistory(
+        ref,
+        (id, now) => SlotActionHistory(
+          id: id,
+          action: Actions.SLOT_DELETED,
+          slotID: slotID,
+          description: 'Fingerprint slot #$slotID removed via LockSync app',
+          timestamp: now,
+        ),
+      );
+      return true;
+    } catch (_) {
+      return false;
+    }
   }
 
-  /// Renames the device in Firebase and broadcasts the update
-  Future<void> updateDeviceName(
+  /// Updates locker device display name
+  Future<bool> updateDeviceName(
     String newName, [
-    String lockId = defaultLockId,
+    String lockId = LockServiceConstants.defaultLockId,
   ]) async {
     final cleanName = newName.trim().toUpperCase();
-    if (cleanName.isEmpty) return;
+    if (cleanName.isEmpty) return false;
 
     final ref = _lockRef(lockId);
-    if (ref != null) {
-      try {
-        await ref.update({'name': cleanName});
-        return;
-      } catch (_) {}
+    if (ref == null) return false;
+
+    try {
+      await ref.update({'name': cleanName});
+      return true;
+    } catch (_) {
+      return false;
     }
-
-    _currentDevice = _currentDevice.copyWith(name: cleanName);
-    _deviceStreamController.add(_currentDevice);
-  }
-
-  /// Updates auto-lock timeout
-  Future<void> updateAutoLockTimeout(
-    int seconds, [
-    String lockId = defaultLockId,
-  ]) async {
-    final ref = _lockRef(lockId);
-    if (ref != null) {
-      try {
-        await ref.update({'autoLockTimeout': seconds});
-        return;
-      } catch (_) {}
-    }
-
-    _currentDevice = _currentDevice.copyWith(autoLockTimeout: seconds);
-    _deviceStreamController.add(_currentDevice);
-  }
-
-  /// Checks system connectivity against Firebase Realtime Database
-  Future<bool> checkSystemConnectivity([String lockId = defaultLockId]) async {
-    final ref = _lockRef(lockId);
-    if (ref != null) {
-      try {
-        final snapshot = await ref.child('status').get().timeout(
-              const Duration(seconds: 4),
-            );
-        if (snapshot.exists) {
-          final status = snapshot.value?.toString().toLowerCase();
-          return status == 'online' || status == 'connected';
-        }
-      } catch (_) {
-        return false;
-      }
-    }
-    return _currentDevice.isOnline;
   }
 }

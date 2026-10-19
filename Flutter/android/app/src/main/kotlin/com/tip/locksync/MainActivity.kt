@@ -1,4 +1,4 @@
-package com.locksync.lock_sync
+package com.tip.locksync
 
 import io.flutter.embedding.android.FlutterActivity
 

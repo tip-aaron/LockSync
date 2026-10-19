@@ -1,24 +1,19 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import '../constants/app_constants.dart';
 import '../services/lock_service.dart';
 import 'auth_screen.dart';
 import 'lock_control_screen.dart';
 
 enum SystemPhase {
-  checking,    // Circular ring progress is filling (0% -> 100%), only ring and LOCKSYNC visible
-  ringExiting, // Ring and LOCKSYNC fade out
+  checking,    // Circular ring progress is filling (0% -> 100%)
+  ringExiting, // Ring and brand fade out
   paused,      // Screen pause for 1.0s after ring fades out
   welcome,     // "WELCOME TO LOCKSYNC" fades in & holds for 1.5s
   offline,     // Ring turns red, SYSTEM OFFLINE & retry actions appear
 }
 
 /// Loading screen acting as a hardware check before transitioning to the lock screen.
-///
-/// 1. Displays ONLY the circular ring progress bar with LOCKSYNC in the center (no extraneous text).
-/// 2. Once the progress completes, the ring and LOCKSYNC fade out.
-/// 3. After 1.0 second, "WELCOME TO LOCKSYNC" appears in the center.
-/// 4. After staying for 1.5 seconds, the screen smoothly transitions into LockControlScreen.
-/// 5. If offline: Halts progression, turns ring red/amber, displays "SYSTEM OFFLINE", offers retry.
 class SystemCheckScreen extends StatefulWidget {
   final bool? forceOffline;
   final Duration checkDuration;
@@ -112,9 +107,7 @@ class _SystemCheckScreenState extends State<SystemCheckScreen>
   }
 
   void _startChecking() {
-    setState(() {
-      _phase = SystemPhase.checking;
-    });
+    setState(() => _phase = SystemPhase.checking);
 
     _pauseTimer?.cancel();
     _transitionTimer?.cancel();
@@ -127,35 +120,40 @@ class _SystemCheckScreenState extends State<SystemCheckScreen>
   void _onProgressCompleted() async {
     if (!mounted) return;
 
-    final isOffline = widget.forceOffline ??
-        !(await LockService.instance.checkSystemConnectivity());
+    bool isOffline;
+    if (widget.forceOffline != null) {
+      isOffline = widget.forceOffline!;
+    } else {
+      try {
+        // Stream the live locker node directly from Firebase RTDB with a timeout fallback
+        final device = await LockService.instance
+            .streamLock()
+            .first
+            .timeout(const Duration(seconds: 3));
+        isOffline = device == null;
+      } catch (_) {
+        isOffline = true;
+      }
+    }
 
     if (!mounted) return;
 
     if (isOffline) {
-      setState(() {
-        _phase = SystemPhase.offline;
-      });
+      setState(() => _phase = SystemPhase.offline);
     } else {
-      // Step A: Progress is complete -> let the ring and LOCKSYNC fade out
-      setState(() {
-        _phase = SystemPhase.ringExiting;
-      });
+      // Step A: Progress complete -> let ring and brand fade out
+      setState(() => _phase = SystemPhase.ringExiting);
       _ringFadeController.forward().then((_) {
         if (!mounted) return;
 
-        setState(() {
-          _phase = SystemPhase.paused;
-        });
+        setState(() => _phase = SystemPhase.paused);
 
         // Step B: After 1.0s pause, let "WELCOME TO LOCKSYNC" appear
         _pauseTimer?.cancel();
         _pauseTimer = Timer(widget.pauseBeforeWelcomeDuration, () {
           if (!mounted) return;
 
-          setState(() {
-            _phase = SystemPhase.welcome;
-          });
+          setState(() => _phase = SystemPhase.welcome);
           _welcomeFadeController.forward().then((_) {
             if (!mounted) return;
 
@@ -189,11 +187,11 @@ class _SystemCheckScreenState extends State<SystemCheckScreen>
     Navigator.of(context).pushReplacement(
       PageRouteBuilder(
         pageBuilder: (context, animation, secondaryAnimation) =>
-            const AuthScreen(initialMode: AuthMode.signIn),
+            const AuthScreen(),
         transitionsBuilder: (context, animation, secondaryAnimation, child) {
           return FadeTransition(opacity: animation, child: child);
         },
-        transitionDuration: const Duration(milliseconds: 300),
+        transitionDuration: AppDimensions.animDurationStandard,
       ),
     );
   }
@@ -201,17 +199,15 @@ class _SystemCheckScreenState extends State<SystemCheckScreen>
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFF080C10),
+      backgroundColor: AppColors.background,
       body: SafeArea(
         child: Center(
           child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 390),
+            constraints:
+                const BoxConstraints(maxWidth: AppDimensions.maxContentWidth),
             child: Column(
               children: [
-                // Camera clearance space at the top
                 const SizedBox(height: 28),
-
-                // Center Stage: Only Ring + LOCKSYNC or Welcome view
                 Expanded(
                   child: Center(
                     child: SingleChildScrollView(
@@ -232,59 +228,43 @@ class _SystemCheckScreenState extends State<SystemCheckScreen>
     );
   }
 
-  // Orchestrates the display between Ring view and Welcome view
   Widget _buildCenterStage() {
-    if (_phase == SystemPhase.welcome) {
-      // Welcome view appears after 1.5s delay following ring fade out
-      return FadeTransition(
-        opacity: _welcomeFadeAnimation,
-        child: _buildWelcomeContent(),
-      );
-    }
-
-    if (_phase == SystemPhase.paused) {
-      // During the 1.5s pause, ring has faded out and screen is clean
-      return const SizedBox.shrink();
-    }
-
-    // Checking, ringExiting, or offline:
-    // Shows only the circular ring progress bar with LOCKSYNC in the center
-    return FadeTransition(
-      opacity: _ringFadeAnimation,
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          // Circular ring progress bar with LOCKSYNC dead center
-          _buildProgressRingWithBrand(),
-
-          // If offline: show offline diagnostics and retry controls
-          if (_phase == SystemPhase.offline) ...[
-            const SizedBox(height: 36),
-            _buildOfflineControls(),
-          ],
-        ],
-      ),
-    );
+    return switch (_phase) {
+      SystemPhase.welcome => FadeTransition(
+          opacity: _welcomeFadeAnimation,
+          child: _buildWelcomeContent(),
+        ),
+      SystemPhase.paused => const SizedBox.shrink(),
+      _ => FadeTransition(
+          opacity: _ringFadeAnimation,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              _buildProgressRingWithBrand(),
+              if (_phase == SystemPhase.offline) ...[
+                const SizedBox(height: 36),
+                _buildOfflineControls(),
+              ],
+            ],
+          ),
+        ),
+    };
   }
 
-  // ==========================================
-  // RING PROGRESS BAR WITH LOCKSYNC IN THE DEAD CENTER
-  // ==========================================
   Widget _buildProgressRingWithBrand() {
     final bool isOffline = _phase == SystemPhase.offline;
-    final Color ringColor =
-        isOffline ? const Color(0xFFFF4B55) : const Color(0xFF00D4FF);
+    final Color ringColor = isOffline ? AppColors.errorRed : AppColors.cyanAccent;
 
     return Container(
       width: 200,
       height: 200,
       decoration: BoxDecoration(
         shape: BoxShape.circle,
-        color: const Color(0xFF0A1017),
+        color: AppColors.cardBackground,
         boxShadow: [
           BoxShadow(
-            color: ringColor.withOpacity(isOffline ? 0.30 : 0.22),
+            color: ringColor.withValues(alpha: isOffline ? 0.30 : 0.22),
             blurRadius: 28,
             spreadRadius: 2,
           ),
@@ -293,7 +273,6 @@ class _SystemCheckScreenState extends State<SystemCheckScreen>
       child: Stack(
         alignment: Alignment.center,
         children: [
-          // 1. Background ring track
           const SizedBox(
             width: 200,
             height: 200,
@@ -301,17 +280,14 @@ class _SystemCheckScreenState extends State<SystemCheckScreen>
               value: 1.0,
               strokeWidth: 4.0,
               valueColor: AlwaysStoppedAnimation<Color>(
-                Color(0xFF131D28),
+                AppColors.borderSubtle,
               ),
             ),
           ),
-
-          // 2. Active animated circular progress ring
           AnimatedBuilder(
             animation: _progressAnimation,
             builder: (context, child) {
-              final double value =
-                  isOffline ? 1.0 : _progressAnimation.value;
+              final double value = isOffline ? 1.0 : _progressAnimation.value;
               return SizedBox(
                 width: 200,
                 height: 200,
@@ -324,26 +300,18 @@ class _SystemCheckScreenState extends State<SystemCheckScreen>
               );
             },
           ),
-
-          // 3. LOCKSYNC brand in the DEAD CENTER of the ring
           Center(
             child: RichText(
               textAlign: TextAlign.center,
               text: const TextSpan(
-                style: TextStyle(
-                  fontFamily: 'JetBrains Mono',
-                  fontSize: 22,
-                  fontWeight: FontWeight.w800,
-                  letterSpacing: 3.0,
-                ),
                 children: [
                   TextSpan(
-                    text: 'LOCK',
-                    style: TextStyle(color: Color(0xFFF1F5F9)),
+                    text: AppStrings.appTitlePart1,
+                    style: AppTextStyles.logoWhite,
                   ),
                   TextSpan(
-                    text: 'SYNC',
-                    style: TextStyle(color: Color(0xFF00D4FF)),
+                    text: AppStrings.appTitlePart2,
+                    style: AppTextStyles.logoCyan,
                   ),
                 ],
               ),
@@ -354,7 +322,6 @@ class _SystemCheckScreenState extends State<SystemCheckScreen>
     );
   }
 
-  // Offline status and action controls (shown only when offline)
   Widget _buildOfflineControls() {
     return Column(
       key: const Key('offline_state'),
@@ -362,20 +329,20 @@ class _SystemCheckScreenState extends State<SystemCheckScreen>
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
           decoration: BoxDecoration(
-            color: const Color(0xFFFF4B55).withOpacity(0.15),
-            borderRadius: BorderRadius.circular(6),
+            color: AppColors.errorRed.withValues(alpha: 0.15),
+            borderRadius: BorderRadius.circular(AppDimensions.radiusSmall),
             border: Border.all(
-              color: const Color(0xFFFF4B55).withOpacity(0.4),
+              color: AppColors.errorRed.withValues(alpha: 0.4),
             ),
           ),
           child: const Text(
             'CONNECTION FAILED',
             style: TextStyle(
-              fontFamily: 'JetBrains Mono',
+              fontFamily: AppTextStyles.fontMono,
               fontSize: 10.5,
               fontWeight: FontWeight.w700,
               letterSpacing: 1.4,
-              color: Color(0xFFFF4B55),
+              color: AppColors.errorRed,
             ),
           ),
         ),
@@ -384,11 +351,11 @@ class _SystemCheckScreenState extends State<SystemCheckScreen>
           'SYSTEM OFFLINE',
           textAlign: TextAlign.center,
           style: TextStyle(
-            fontFamily: 'JetBrains Mono',
+            fontFamily: AppTextStyles.fontMono,
             fontSize: 19,
             fontWeight: FontWeight.w800,
             letterSpacing: 1.6,
-            color: Color(0xFFF1F5F9),
+            color: AppColors.textPrimary,
           ),
         ),
         const SizedBox(height: 6),
@@ -396,17 +363,16 @@ class _SystemCheckScreenState extends State<SystemCheckScreen>
           'Cannot reach Locker 01 hardware. Access restricted until hardware comes online.',
           textAlign: TextAlign.center,
           style: TextStyle(
-            fontFamily: 'Inter',
+            fontFamily: AppTextStyles.fontSans,
             fontSize: 12.5,
-            color: Color(0xFF8E9EB2),
+            color: AppColors.textSecondary,
             height: 1.4,
           ),
         ),
         const SizedBox(height: 24),
-        // Retry Connection Button
         SizedBox(
           width: double.infinity,
-          height: 48,
+          height: AppDimensions.dialogInputFieldHeight,
           child: ElevatedButton.icon(
             key: const Key('retry_connection_button'),
             onPressed: _retryConnection,
@@ -414,41 +380,42 @@ class _SystemCheckScreenState extends State<SystemCheckScreen>
             label: const Text(
               'RETRY CONNECTION',
               style: TextStyle(
-                fontFamily: 'JetBrains Mono',
+                fontFamily: AppTextStyles.fontMono,
                 fontSize: 12.5,
                 fontWeight: FontWeight.w700,
                 letterSpacing: 1.2,
               ),
             ),
             style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFF00D4FF),
-              foregroundColor: const Color(0xFF080C10),
+              backgroundColor: AppColors.cyanAccent,
+              foregroundColor: AppColors.background,
               shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(10),
+                borderRadius:
+                    BorderRadius.circular(AppDimensions.radiusMedium),
               ),
               elevation: 0,
             ),
           ),
         ),
         const SizedBox(height: 12),
-        // Back to Sign In Button
         SizedBox(
           width: double.infinity,
-          height: 48,
+          height: AppDimensions.dialogInputFieldHeight,
           child: OutlinedButton(
             key: const Key('back_to_sign_in_button'),
             onPressed: _returnToSignIn,
             style: OutlinedButton.styleFrom(
-              foregroundColor: const Color(0xFF8E9EB2),
-              side: const BorderSide(color: Color(0xFF162232), width: 1.2),
+              foregroundColor: AppColors.textSecondary,
+              side: const BorderSide(color: AppColors.borderSubtle, width: 1.2),
               shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(10),
+                borderRadius:
+                    BorderRadius.circular(AppDimensions.radiusMedium),
               ),
             ),
             child: const Text(
               'BACK TO SIGN IN',
               style: TextStyle(
-                fontFamily: 'JetBrains Mono',
+                fontFamily: AppTextStyles.fontMono,
                 fontSize: 12,
                 fontWeight: FontWeight.w700,
                 letterSpacing: 1.2,
@@ -460,9 +427,6 @@ class _SystemCheckScreenState extends State<SystemCheckScreen>
     );
   }
 
-  // ==========================================
-  // WELCOME CONTENT (APPEARS AFTER RING FADES & 1.0S PAUSE, HOLDS FOR 1.5S)
-  // ==========================================
   Widget _buildWelcomeContent() {
     return const Center(
       key: Key('online_verified_state'),
@@ -470,11 +434,11 @@ class _SystemCheckScreenState extends State<SystemCheckScreen>
         'WELCOME TO LOCKSYNC',
         textAlign: TextAlign.center,
         style: TextStyle(
-          fontFamily: 'JetBrains Mono',
+          fontFamily: AppTextStyles.fontMono,
           fontSize: 22,
           fontWeight: FontWeight.w800,
           letterSpacing: 2.2,
-          color: Color(0xFFF1F5F9),
+          color: AppColors.textPrimary,
         ),
       ),
     );

@@ -6,7 +6,7 @@ plugins {
 }
 
 android {
-    namespace = "com.locksync.lock_sync"
+    namespace = "com.tip.locksync"
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
 
@@ -16,7 +16,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.locksync.lock_sync"
+        applicationId = "com.tip.locksync"
         minSdk = flutter.minSdkVersion // Set to 23 for Firebase compatibility
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode

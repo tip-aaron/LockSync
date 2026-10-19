@@ -1,5 +1,4 @@
 import 'package:firebase_core/firebase_core.dart';
-import '../firebase_options.dart';
 
 class FirebaseService {
   static bool _initialized = false;
@@ -7,25 +6,17 @@ class FirebaseService {
 
   static Future<void> initialize() async {
     try {
-      if (DefaultFirebaseOptions.isConfigured) {
-        await Firebase.initializeApp(
-          options: DefaultFirebaseOptions.currentPlatform,
-        );
+      if (Firebase.apps.isNotEmpty) {
         _initialized = true;
-      } else if (Firebase.apps.isNotEmpty) {
-        _initialized = true;
-      } else {
-        // Attempt platform initialization if possible
-        try {
-          await Firebase.initializeApp();
-          _initialized = true;
-        } catch (_) {
-          // If no platform configuration exists (e.g. testing or before flutterfire config),
-          // continue gracefully in dynamic fallback mode
-          _initialized = false;
-        }
+        return;
       }
-    } catch (_) {
+
+      // Initializes Firebase directly using native platform configuration
+      // (google-services.json on Android / GoogleService-Info.plist on iOS)
+      await Firebase.initializeApp();
+      _initialized = true;
+    } catch (e) {
+      // Fallback state if native config files are missing or invalid
       _initialized = false;
     }
   }
