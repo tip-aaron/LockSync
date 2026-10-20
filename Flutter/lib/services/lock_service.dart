@@ -268,7 +268,7 @@ class LockService {
     try {
       await ref.update({
         'enrollStatus': status.value,
-        'lastAction': status.value,
+        'lastAction': Actions.ENROLLMENT.value,
       });
       return true;
     } catch (_) {
@@ -285,7 +285,6 @@ class LockService {
     if (ref == null) return false;
 
     try {
-      await ref.update({'deleteSlot': slotID});
       await ref
           .child('${LockServiceConstants.registeredSlotsNode}/slot_$slotID')
           .remove();

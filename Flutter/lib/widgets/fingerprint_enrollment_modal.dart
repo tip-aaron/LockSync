@@ -105,6 +105,9 @@ class _FingerprintEnrollmentModalState extends State<FingerprintEnrollmentModal>
     _lockSub = _lockService.streamLock().listen((device) {
       if (!mounted || device == null) return;
 
+      // Keep view fixed on COMPLETED state once reached (ignore RTDB resets back to IDLE)
+      if (_status == EnrollStatus.COMPLETED) return;
+
       final previous = _status;
       final next = device.enrollStatus;
       final slots = device.registeredSlots.values.toList();
@@ -537,26 +540,6 @@ class _FingerprintEnrollmentModalState extends State<FingerprintEnrollmentModal>
             ),
           ),
         ),
-        if (_lastAction != 'READY') ...[
-          const SizedBox(height: 8),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-            decoration: BoxDecoration(
-              color: AppColors.cardBackground,
-              borderRadius: BorderRadius.circular(AppDimensions.radiusSmall),
-              border: Border.all(color: AppColors.borderSubtle),
-            ),
-            child: Text(
-              'ACTION: $_lastAction',
-              style: const TextStyle(
-                fontFamily: AppTextStyles.fontMono,
-                fontSize: 9.5,
-                fontWeight: FontWeight.w600,
-                color: AppColors.cyanAccent,
-              ),
-            ),
-          ),
-        ],
       ],
     );
   }
