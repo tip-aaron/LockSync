@@ -10,8 +10,8 @@
 // ============================================================================
 // 1. NETWORK & CLOUD CREDENTIALS
 // ============================================================================
-#define WIFI_SSID "Wokwi-GUEST"
-#define WIFI_PASSWORD ""
+#define WIFI_SSID "jerick"
+#define WIFI_PASSWORD "kissmuna"
 #define API_KEY "AIzaSyCwXNa8Ki40gn8W3_QdC6dbiIRkJsILGxA"
 #define DATABASE_URL                                                           \
   "https://locksync-ab6fa-default-rtdb.asia-southeast1.firebasedatabase.app"
@@ -25,10 +25,10 @@ const char *NTP_SERVER_2 = "time.nist.gov";
 // ============================================================================
 // 2. HARDWARE PIN DEFINITIONS
 // ============================================================================
-#define PIR_PIN 14
-#define SERVO_PIN 13
-#define BUZZER_PIN 25
-#define LED_PIN 26
+#define PIR_PIN 27
+#define SERVO_PIN 18
+#define BUZZER_PIN 26
+#define LED_PIN 25
 #define BUTTON_PIN 27
 #define FP_RX_PIN 16
 #define FP_TX_PIN 17
@@ -64,7 +64,7 @@ constexpr int SLOT_INVALID = -1;
 constexpr int FP_SEARCH_NOT_FOUND = -2;
 constexpr int FP_SEARCH_ERROR = -1;
 
-#define WOKWI_SIMULATION_MODE true
+#define WOKWI_SIMULATION_MODE false
 
 // ============================================================================
 // 4. BUZZER FREQUENCIES & DURATIONS
@@ -303,6 +303,17 @@ void setup() {
 
   if (finger.verifyPassword()) {
     Serial.println("Fingerprint sensor online.");
+
+    uint8_t securityLevel = 1;
+
+    uint8_t res = finger.setSecurityLevel(securityLevel);
+
+    if (res == FINGERPRINT_OK) {
+      Serial.println("Changed security level");
+    } else {
+      Serial.println("Failed");
+      Serial.println(res);
+    }
   } else {
     Serial.println(
         "Notice: Fingerprint sensor running in Wokwi Simulation Mode.");
@@ -454,17 +465,46 @@ void handleLockButton() {
     }
   }
 }
-
 void handleBiometricWorkflow() {
   if (currentEnrollStatus == STATUS_START_ENROLL) {
     processAppEnrollment();
   } else if (currentEnrollStatus == STATUS_IDLE && !WOKWI_SIMULATION_MODE) {
-    int id = getFingerprintID();
-    if (id >= 0) {
-      applyLockState(false, PREFIX_MATCH_FINGER + String(id), true);
-    } else if (id == FP_SEARCH_NOT_FOUND) {
-      alertUnauthorized();
+    
+    // Step 1: Get Image
+    uint8_t p = finger.getImage();
+    if (p == FINGERPRINT_NOFINGER) {
+      // No finger placed yet, just return quietly to keep loop running
+      return; 
+    } else if (p != FINGERPRINT_OK) {
+      Serial.print("getImage Error: 0x"); Serial.println(p, HEX);
+      return;
     }
+    Serial.println("getImage Success!");
+
+    // Step 2: Convert to Template (Image2Tz)
+    p = finger.image2Tz();
+    if (p != FINGERPRINT_OK) {
+      Serial.print("image2Tz Error: 0x"); Serial.println(p, HEX);
+      return;
+    }
+    Serial.println("image2Tz Success!");
+
+    // Step 3: Search Library (FingerFastSearch)
+    p = finger.fingerFastSearch();
+    if (p == FINGERPRINT_NOTFOUND) {
+      Serial.println("Search Result: Fingerprint not found (Unauthorized).");
+      alertUnauthorized();
+      return;
+    } else if (p != FINGERPRINT_OK) {
+      Serial.print("fingerFastSearch Error: 0x"); Serial.println(p, HEX);
+      return;
+    }
+
+    // Match Found! Now confidence is guaranteed to be valid.
+    Serial.print("Match Found! ID #"); Serial.print(finger.fingerID);
+    Serial.print(" | Confidence Score: "); Serial.println(finger.confidence);
+    
+    applyLockState(false, PREFIX_MATCH_FINGER + String(finger.fingerID), true);
   }
 }
 
@@ -475,7 +515,7 @@ uint8_t waitForFingerScan() {
   flushSerialBuffer();
   unsigned long start = millis();
 
-  while (millis() - start < ENROLL_TIMEOUT_MS) {
+  while ((millis() - start) < ENROLL_TIMEOUT_MS) {
     if (currentEnrollStatus == STATUS_CANCELED ||
         currentEnrollStatus == STATUS_IDLE) {
       Serial.println("Fingerprint scanning cancelled!");
@@ -525,7 +565,6 @@ int getNextFreeSlot() {
   }
   return SLOT_INVALID;
 }
-
 void processAppEnrollment() {
   int targetSlot = getNextFreeSlot();
   if (targetSlot < 0) {
@@ -546,6 +585,17 @@ void processAppEnrollment() {
     Serial.println("Enrollment aborted during Scan 1.");
     currentEnrollStatus = STATUS_IDLE;
     return;
+  }
+
+  // Convert Scan 1 to Template Slot 1
+  if (!WOKWI_SIMULATION_MODE) {
+    uint8_t p = finger.image2Tz(1);
+    if (p != FINGERPRINT_OK) {
+      Serial.print("Conversion error (Slot 1): 0x"); Serial.println(p, HEX);
+      updateEnrollStatus(STATUS_ERROR_STORAGE, ACTION_ENROLLMENT);
+      currentEnrollStatus = STATUS_IDLE;
+      return;
+    }
   }
 
   updateEnrollStatus(STATUS_REMOVE_FINGER, ACTION_ENROLLMENT);
@@ -569,6 +619,29 @@ void processAppEnrollment() {
     return;
   }
 
+  // Convert Scan 2 to Template Slot 2 & Create Model
+  if (!WOKWI_SIMULATION_MODE) {
+    uint8_t p = finger.image2Tz(2);
+    if (p != FINGERPRINT_OK) {
+      Serial.print("Conversion error (Slot 2): 0x"); Serial.println(p, HEX);
+      updateEnrollStatus(STATUS_ERROR_STORAGE, ACTION_ENROLLMENT);
+      currentEnrollStatus = STATUS_IDLE;
+      return;
+    }
+
+    p = finger.createModel();
+    if (p != FINGERPRINT_OK) {
+      if (p == FINGERPRINT_ENROLLMISMATCH) {
+        Serial.println("Prints did not match! Try again.");
+      } else {
+        Serial.print("Model creation error: 0x"); Serial.println(p, HEX);
+      }
+      updateEnrollStatus(STATUS_ERROR_STORAGE, ACTION_ENROLLMENT);
+      currentEnrollStatus = STATUS_IDLE;
+      return;
+    }
+  }
+
   updateEnrollStatus(STATUS_PROCESSING, ACTION_ENROLLMENT);
 
   // --- ATOMIC VERIFICATION BEFORE COMMITMENT ---
@@ -577,8 +650,7 @@ void processAppEnrollment() {
       if (fbdo.dataType() == "string") {
         String cloudStatus = fbdo.stringData();
         if (cloudStatus == STATUS_CANCELED || cloudStatus == STATUS_IDLE) {
-          Serial.println("Atomic Check: Remote cancellation detected! Aborting "
-                         "commitment.");
+          Serial.println("Atomic Check: Remote cancellation detected! Aborting commitment.");
           currentEnrollStatus = STATUS_IDLE;
           return;
         }
@@ -594,8 +666,7 @@ void processAppEnrollment() {
   }
 
   // --- COMMITMENT ---
-  int p =
-      WOKWI_SIMULATION_MODE ? FINGERPRINT_OK : finger.storeModel(targetSlot);
+  int p = WOKWI_SIMULATION_MODE ? FINGERPRINT_OK : finger.storeModel(targetSlot);
   if (p == FINGERPRINT_OK) {
     if (WOKWI_SIMULATION_MODE)
       simulatedSlots[targetSlot] = true;
@@ -603,15 +674,12 @@ void processAppEnrollment() {
     Serial.printf("SUCCESS! Stored fingerprint in Slot #%d\n", targetSlot);
 
     if (firebaseAuthenticated && Firebase.ready()) {
-      String slotNodePath =
-          LOCKER_PATH + PATH_REGISTERED_SLOT_PREFIX + String(targetSlot);
-      String targetLabel =
-          (enrollLabel.length() > 0)
-              ? enrollLabel
-              : (LABEL_FINGERPRINT_PREFIX + String(targetSlot));
+      String slotNodePath = LOCKER_PATH + PATH_REGISTERED_SLOT_PREFIX + String(targetSlot);
+      String targetLabel = (enrollLabel.length() > 0)
+          ? enrollLabel
+          : (LABEL_FINGERPRINT_PREFIX + String(targetSlot));
 
-      Serial.printf("Applying label '%s' to Slot #%d\n", targetLabel.c_str(),
-                    targetSlot);
+      Serial.printf("Applying label '%s' to Slot #%d\n", targetLabel.c_str(), targetSlot);
 
       FirebaseJson slotJson;
       slotJson.add("slotId", targetSlot);
