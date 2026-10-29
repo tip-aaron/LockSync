@@ -10,7 +10,9 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-
+  toastification: ^2.0.0
+  page_transition: ^2.1.0
+  flutter_bounceable: ^1.1.0
   # UI Components
   cupertino_icons: ^1.0.8
   firebase_core: ^5.0.0

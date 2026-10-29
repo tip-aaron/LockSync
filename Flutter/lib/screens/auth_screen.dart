@@ -1,10 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:page_transition/page_transition.dart';
 import '../constants/app_constants.dart';
 import '../services/auth_service.dart';
-import '../widgets/biometric_auth_bottom_sheet.dart';
-import '../widgets/change_pin_dialog.dart';
 import '../widgets/locksync_text_field.dart';
-import 'system_check_screen.dart';
+import 'main_screen.dart';
 
 class AuthScreen extends StatefulWidget {
   const AuthScreen({super.key});
@@ -19,354 +18,228 @@ class _AuthScreenState extends State<AuthScreen> {
 
   bool _isLoading = false;
   bool _obscurePin = true;
+  String? _errorMessage;
+
+  @override
+  void initState() {
+    super.initState();
+    _pinController.addListener(_clearErrorOnInput);
+  }
 
   @override
   void dispose() {
+    _pinController.removeListener(_clearErrorOnInput);
     _pinController.dispose();
     super.dispose();
   }
 
+  void _clearErrorOnInput() {
+    // Only clear error when active input text exists (prevents _pinController.clear() from wiping state prematurely)
+    if (_errorMessage != null && _pinController.text.isNotEmpty) {
+      setState(() => _errorMessage = null);
+    }
+  }
+
+  // --- Logic & Actions ---
+
   Future<void> _submitPin() async {
     if (_isLoading) return;
 
+    if (_errorMessage != null) {
+      setState(() => _errorMessage = null);
+    }
+
     final pin = _pinController.text.trim();
     if (pin.isEmpty) {
-      _showSnackBar(AppStrings.enterPinPrompt, isError: true);
+      setState(() => _errorMessage = AppStrings.enterPinPrompt);
       return;
     }
 
     setState(() => _isLoading = true);
-
     final result = await _authService.verifyPinAndUnlock(pin);
 
     if (!mounted) return;
-
     setState(() => _isLoading = false);
 
     if (!result.success) {
-      _showSnackBar(result.errorMessage ?? AppStrings.accessDenied, isError: true);
+      setState(() {
+        _errorMessage = result.errorMessage ?? AppStrings.accessDenied;
+      });
       _pinController.clear();
       return;
     }
 
-    _navigateToSystemCheck();
+    _navigateToMain();
   }
 
-  Future<void> _unlockWithBiometrics() async {
-    if (_isLoading) return;
-
-    setState(() => _isLoading = true);
-
-    final result = await _authService.unlockWithBiometrics();
-
-    if (!mounted) return;
-
-    setState(() => _isLoading = false);
-
-    if (!result.success) {
-      _showSnackBar(result.errorMessage ?? AppStrings.accessDenied, isError: true);
-      return;
-    }
-
-    _navigateToSystemCheck();
-  }
-
-  void _navigateToSystemCheck() {
+  void _navigateToMain() {
     Navigator.of(context).pushReplacement(
-      PageRouteBuilder(
-        pageBuilder: (context, animation, secondaryAnimation) =>
-            const SystemCheckScreen(),
-        transitionsBuilder: (context, animation, secondaryAnimation, child) {
-          const begin = Offset(0.04, 0.0);
-          const end = Offset.zero;
-          const curve = Curves.easeOutCubic;
-          final tween =
-              Tween(begin: begin, end: end).chain(CurveTween(curve: curve));
-          return FadeTransition(
-            opacity: animation,
-            child: SlideTransition(
-              position: animation.drive(tween),
-              child: child,
-            ),
-          );
-        },
-        transitionDuration: AppDimensions.animDurationStandard,
+      PageTransition(
+        type: PageTransitionType.rightToLeftWithFade,
+        duration: AppDimensions.animDurationStandard,
+        child: const MainScreen(),
       ),
     );
   }
 
-  void _showChangePinDialog() {
-    showDialog(
-      context: context,
-      builder: (dialogContext) => ChangePinDialog(
-        onShowSnackBar: _showSnackBar,
-      ),
-    );
-  }
-
-  void _simulateBiometrics() {
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: AppColors.cardBackground,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(
-          top: Radius.circular(AppDimensions.radiusCircular),
-        ),
-        side: BorderSide(color: AppColors.borderSubtle, width: 1),
-      ),
-      builder: (modalContext) => BiometricAuthBottomSheet(
-        onSuccess: _unlockWithBiometrics,
-        onError: _showSnackBar,
-      ),
-    );
-  }
-
-  void _showSnackBar(String message, {bool isError = false}) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        backgroundColor:
-            isError ? AppColors.errorBackground : AppColors.successBackground,
-        behavior: SnackBarBehavior.floating,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(AppDimensions.radiusMedium),
-          side: BorderSide(
-            color: isError ? AppColors.errorRed : AppColors.cyanAccent,
-            width: 1,
-          ),
-        ),
-        content: Row(
-          children: [
-            Icon(
-              isError
-                  ? Icons.error_outline_rounded
-                  : Icons.check_circle_outline_rounded,
-              color: isError ? AppColors.errorRed : AppColors.cyanAccent,
-              size: 18,
-            ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Text(
-                message,
-                style: const TextStyle(
-                  fontFamily: AppTextStyles.fontSans,
-                  fontSize: 12.5,
-                  color: AppColors.textPrimary,
-                ),
-              ),
-            ),
-          ],
-        ),
-        duration: const Duration(seconds: 3),
-      ),
-    );
-  }
+  // --- UI Build Shell ---
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: AppColors.background,
       body: SafeArea(
-        child: Center(
-          child: ConstrainedBox(
-            constraints:
-                const BoxConstraints(maxWidth: AppDimensions.maxContentWidth),
-            child: SingleChildScrollView(
-              physics: const ClampingScrollPhysics(),
-              padding: const EdgeInsets.symmetric(
-                horizontal: 24.0,
-                vertical: 16.0,
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  // 1. HEADER (centered wordmark, no back button)
-                  Center(
-                    child: RichText(
-                      textAlign: TextAlign.center,
-                      text: const TextSpan(
-                        children: [
-                          TextSpan(
-                            text: AppStrings.appTitlePart1,
-                            style: AppTextStyles.logoWhite,
-                          ),
-                          TextSpan(
-                            text: AppStrings.appTitlePart2,
-                            style: AppTextStyles.logoCyan,
-                          ),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(
+            horizontal: 24.0,
+            vertical: 16.0,
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              // 1. PINNED TOP-LEFT LOGO
+              _buildHeaderLogo(),
+
+              // 2. VERTICALLY CENTERED FORM
+              Expanded(
+                child: Center(
+                  child: SingleChildScrollView(
+                    physics: const ClampingScrollPhysics(),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        _buildHeadingSection(),
+                        const SizedBox(height: 32),
+                        _buildPinInput(),
+                        if (_errorMessage != null) ...[
+                          const SizedBox(height: 8),
+                          _buildErrorMessage(),
                         ],
-                      ),
+                        const SizedBox(height: 24),
+                        _buildSubmitButton(),
+                      ],
                     ),
                   ),
-
-                  const SizedBox(height: 32),
-
-                  // 2. HEADING & SUBTITLE
-                  const Text(
-                    AppStrings.pageTitle,
-                    style: AppTextStyles.heading,
-                  ),
-                  const SizedBox(height: 6),
-                  const Text(
-                    AppStrings.pageSubtitle,
-                    style: AppTextStyles.subtitle,
-                  ),
-
-                  const SizedBox(height: 32),
-
-                  // 3. MASTER PIN INPUT
-                  LockSyncTextField(
-                    label: AppStrings.masterPinLabel,
-                    placeholder: AppStrings.masterPinPlaceholder,
-                    prefixIcon: Icons.pin_outlined,
-                    controller: _pinController,
-                    obscureText: _obscurePin,
-                    keyboardType: TextInputType.number,
-                    suffixIcon: IconButton(
-                      icon: Icon(
-                        _obscurePin
-                            ? Icons.visibility_outlined
-                            : Icons.visibility_off_outlined,
-                        size: 19,
-                        color: AppColors.textSubtle,
-                      ),
-                      onPressed: () {
-                        setState(() => _obscurePin = !_obscurePin);
-                      },
-                      splashRadius: 20,
-                      tooltip: _obscurePin ? 'Show PIN' : 'Hide PIN',
-                    ),
-                  ),
-
-                  const SizedBox(height: 10),
-
-                  // CHANGE PIN ACTION LINK
-                  Align(
-                    alignment: Alignment.centerRight,
-                    child: InkWell(
-                      onTap: _showChangePinDialog,
-                      borderRadius:
-                          BorderRadius.circular(AppDimensions.radiusSmall / 2),
-                      child: const Padding(
-                        padding:
-                            EdgeInsets.symmetric(vertical: 4, horizontal: 2),
-                        child: Text(
-                          AppStrings.changeMasterPin,
-                          style: AppTextStyles.actionLink,
-                        ),
-                      ),
-                    ),
-                  ),
-
-                  const SizedBox(height: 28),
-
-                  // 4. UNLOCK BUTTON
-                  SizedBox(
-                    height: AppDimensions.primaryButtonHeight,
-                    child: ElevatedButton(
-                      onPressed: _isLoading ? null : _submitPin,
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: AppColors.cyanAccent,
-                        foregroundColor: AppColors.background,
-                        disabledBackgroundColor:
-                            AppColors.cyanAccent.withValues(alpha: 0.4),
-                        shape: RoundedRectangleBorder(
-                          borderRadius:
-                              BorderRadius.circular(AppDimensions.radiusMedium),
-                        ),
-                        elevation: 0,
-                      ),
-                      child: _isLoading
-                          ? const SizedBox(
-                              width: 22,
-                              height: 22,
-                              child: CircularProgressIndicator(
-                                strokeWidth: 2.5,
-                                color: AppColors.background,
-                              ),
-                            )
-                          : const Text(
-                              AppStrings.unlockTerminal,
-                              style: AppTextStyles.buttonLabel,
-                            ),
-                    ),
-                  ),
-
-                  const SizedBox(height: 28),
-
-                  // 5. DIVIDER
-                  Row(
-                    children: const [
-                      Expanded(
-                        child: Divider(
-                          color: AppColors.borderDivider,
-                          thickness: 1,
-                        ),
-                      ),
-                      Padding(
-                        padding: EdgeInsets.symmetric(horizontal: 12.0),
-                        child: Text(
-                          AppStrings.dividerBiometrics,
-                          style: TextStyle(
-                            fontFamily: AppTextStyles.fontMono,
-                            fontSize: 10,
-                            fontWeight: FontWeight.w600,
-                            letterSpacing: 1.6,
-                            color: AppColors.textDivider,
-                          ),
-                        ),
-                      ),
-                      Expanded(
-                        child: Divider(
-                          color: AppColors.borderDivider,
-                          thickness: 1,
-                        ),
-                      ),
-                    ],
-                  ),
-
-                  const SizedBox(height: 20),
-
-                  // 6. BIOMETRICS BUTTON
-                  OutlinedButton.icon(
-                    onPressed: _isLoading ? null : _simulateBiometrics,
-                    icon: const Icon(
-                      Icons.fingerprint_rounded,
-                      size: 20,
-                      color: AppColors.cyanAccent,
-                    ),
-                    label: const Text(
-                      AppStrings.scanBiometricKey,
-                      style: TextStyle(
-                        fontFamily: AppTextStyles.fontMono,
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600,
-                        letterSpacing: 1.2,
-                        color: AppColors.textPrimary,
-                      ),
-                    ),
-                    style: OutlinedButton.styleFrom(
-                      fixedSize: const Size.fromHeight(
-                        AppDimensions.secondaryButtonHeight,
-                      ),
-                      side: const BorderSide(
-                        color: AppColors.borderSubtle,
-                        width: 1,
-                      ),
-                      shape: RoundedRectangleBorder(
-                        borderRadius:
-                            BorderRadius.circular(AppDimensions.radiusMedium),
-                      ),
-                      backgroundColor: AppColors.cardBackground,
-                    ),
-                  ),
-
-                  const SizedBox(height: 20),
-                ],
+                ),
               ),
-            ),
+            ],
           ),
         ),
       ),
+    );
+  }
+
+  // --- Extracted Modular Components ---
+
+  Widget _buildHeaderLogo() {
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: RichText(
+        text: const TextSpan(
+          children: [
+            TextSpan(
+              text: AppStrings.appTitlePart1,
+              style: AppTextStyles.logoWhite,
+            ),
+            TextSpan(
+              text: AppStrings.appTitlePart2,
+              style: AppTextStyles.logoCyan,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildHeadingSection() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: const [
+        Text(AppStrings.pageTitle, style: AppTextStyles.heading),
+        Text(AppStrings.pageSubtitle, style: AppTextStyles.subtitle),
+      ],
+    );
+  }
+
+  Widget _buildPinInput() {
+    return LockSyncTextField(
+      label: AppStrings.masterPinLabel,
+      placeholder: AppStrings.masterPinPlaceholder,
+      prefixIcon: Icons.pin_outlined,
+      controller: _pinController,
+      obscureText: _obscurePin,
+      keyboardType: TextInputType.number,
+      onChanged: (_) => _clearErrorOnInput(),
+      suffixIcon: IconButton(
+        icon: Icon(
+          _obscurePin
+              ? Icons.visibility_outlined
+              : Icons.visibility_off_outlined,
+          size: 20,
+          color: AppColors.textSubtle,
+        ),
+        onPressed: () => setState(() => _obscurePin = !_obscurePin),
+        splashRadius: 24,
+        tooltip: _obscurePin ? 'Show PIN' : 'Hide PIN',
+      ),
+    );
+  }
+
+  Widget _buildErrorMessage() {
+    return Row(
+      children: [
+        const Icon(
+          Icons.error_outline_rounded,
+          size: 16,
+          color: AppColors.errorRed,
+        ),
+        const SizedBox(width: 6),
+        Expanded(
+          child: Text(
+            _errorMessage!,
+            style: const TextStyle(
+              fontFamily: AppTextStyles.fontSans,
+              fontSize: 12,
+              color: AppColors.errorRed,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildSubmitButton() {
+    return ElevatedButton(
+      onPressed: _isLoading ? null : _submitPin,
+      style: ElevatedButton.styleFrom(
+        backgroundColor: AppColors.cyanAccent,
+        foregroundColor: AppColors.background,
+        disabledBackgroundColor: AppColors.cyanAccent.withValues(alpha: 0.5),
+        minimumSize: const Size.fromHeight(AppDimensions.primaryButtonHeight),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(AppDimensions.radiusMedium),
+        ),
+        elevation: 0,
+      ),
+      child: _isLoading ? _buildButtonSpinner() : _buildButtonLabel(),
+    );
+  }
+
+  Widget _buildButtonSpinner() {
+    return const SizedBox(
+      width: 24,
+      height: 24,
+      child: CircularProgressIndicator(
+        strokeWidth: 2.5,
+        color: AppColors.background,
+      ),
+    );
+  }
+
+  Widget _buildButtonLabel() {
+    return const Text(
+      AppStrings.unlockTerminal,
+      style: AppTextStyles.buttonLabel,
     );
   }
 }

@@ -10,6 +10,8 @@ class LockSyncTextField extends StatefulWidget {
   final Widget? suffixIcon;
   final TextInputType keyboardType;
   final int? maxLength;
+  final ValueChanged<String>? onChanged;
+  final TextAlign textAlign;
 
   const LockSyncTextField({
     super.key,
@@ -21,6 +23,8 @@ class LockSyncTextField extends StatefulWidget {
     this.suffixIcon,
     this.keyboardType = TextInputType.text,
     this.maxLength,
+    this.onChanged,
+    this.textAlign = TextAlign.start,
   });
 
   @override
@@ -61,7 +65,7 @@ class _LockSyncTextFieldState extends State<LockSyncTextField> {
             color: _isFocused ? AppColors.cyanAccent : AppColors.textSecondary,
           ),
         ),
-        const SizedBox(height: 7),
+        const SizedBox(height: 8),
         AnimatedContainer(
           duration: AppDimensions.animDurationFast,
           height: AppDimensions.inputFieldHeight,
@@ -70,27 +74,20 @@ class _LockSyncTextFieldState extends State<LockSyncTextField> {
             borderRadius: BorderRadius.circular(AppDimensions.radiusMedium),
             border: Border.all(
               color: _isFocused ? AppColors.cyanAccent : AppColors.borderSubtle,
-              width: _isFocused ? 1.4 : 1.0,
+              width: _isFocused ? 2 : 1.0,
             ),
-            boxShadow: _isFocused
-                ? [
-                    BoxShadow(
-                      color: AppColors.cyanAccent.withValues(alpha: 0.18),
-                      blurRadius: 10,
-                      spreadRadius: 0.5,
-                    ),
-                  ]
-                : const [],
           ),
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.center,
             children: [
               Padding(
-                padding: const EdgeInsets.only(left: 14.0, right: 10.0),
+                padding: const EdgeInsets.only(left: 8.0, right: 8.0),
                 child: Icon(
                   widget.prefixIcon,
-                  size: 18,
-                  color: _isFocused ? AppColors.cyanAccent : AppColors.textMuted,
+                  size: 24,
+                  color: _isFocused
+                      ? AppColors.cyanAccent
+                      : AppColors.textMuted,
                 ),
               ),
               Expanded(
@@ -100,12 +97,13 @@ class _LockSyncTextFieldState extends State<LockSyncTextField> {
                   obscureText: widget.obscureText,
                   keyboardType: widget.keyboardType,
                   maxLength: widget.maxLength,
+                  onChanged: widget.onChanged,
+                  textAlign: widget.textAlign,
                   cursorColor: AppColors.cyanAccent,
                   style: const TextStyle(
                     fontFamily: AppTextStyles.fontMono,
-                    fontSize: 14,
+                    fontSize: 16,
                     color: AppColors.textPrimary,
-                    letterSpacing: 1.5,
                   ),
                   decoration: InputDecoration(
                     border: InputBorder.none,
@@ -113,9 +111,8 @@ class _LockSyncTextFieldState extends State<LockSyncTextField> {
                     hintText: widget.placeholder,
                     hintStyle: const TextStyle(
                       fontFamily: AppTextStyles.fontSans,
-                      fontSize: 13.5,
+                      fontSize: 16,
                       color: AppColors.textMuted,
-                      letterSpacing: 0,
                     ),
                   ),
                 ),

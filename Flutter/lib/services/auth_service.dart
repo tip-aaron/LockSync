@@ -17,7 +17,7 @@ class AuthService {
 
   AuthService._internal();
 
-  /// Local Master PIN passcode (default: 123456)
+  /// In-memory Master PIN passcode (default: 123456)
   static String _masterPin = '123456';
 
   /// Session flag indicating whether the user unlocked the app via PIN
@@ -48,14 +48,14 @@ class AuthService {
     return Stream.value(null);
   }
 
-  /// Unlocks the app after a successful biometric check (no PIN replay).
+  /// Unlocks the app after a successful biometric check
   Future<AuthResult> unlockWithBiometrics() async {
     _isAppUnlocked = true;
     await ensureAnonymousAuth();
     return AuthResult(success: true, user: _auth?.currentUser);
   }
 
-  /// Silently signs in to Firebase anonymously in the background so RTDB rules work
+  /// Silently signs in to Firebase anonymously in the background
   Future<AuthResult> ensureAnonymousAuth() async {
     final auth = _auth;
     if (auth == null) {
@@ -65,10 +65,8 @@ class AuthService {
     try {
       if (auth.currentUser == null) {
         final credential = await auth.signInAnonymously();
-
         return AuthResult(success: true, user: credential.user);
       }
-
       return AuthResult(success: true, user: auth.currentUser);
     } catch (e) {
       return AuthResult(
@@ -78,15 +76,12 @@ class AuthService {
     }
   }
 
-  /// Verifies the PIN entered on the app screen and activates the anonymous Firebase session
+  /// Verifies the entered PIN against the in-memory master PIN
   Future<AuthResult> verifyPinAndUnlock(String pin) async {
     final clean = pin.trim();
     if (clean == _masterPin) {
       _isAppUnlocked = true;
-
-      // Silently authenticate with Firebase Anonymously for Realtime Database stream permissions
       await ensureAnonymousAuth();
-
       return AuthResult(success: true, user: _auth?.currentUser);
     }
 
@@ -96,6 +91,7 @@ class AuthService {
     );
   }
 
+  /// Updates the master PIN in runtime memory
   AuthResult updateMasterPin({
     required String currentPin,
     required String newPin,

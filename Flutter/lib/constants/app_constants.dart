@@ -7,7 +7,7 @@ abstract final class AppColors {
   static const Color borderSubtle = Color(0xFF162232);
   static const Color borderDivider = Color(0xFF162332);
   static const Color borderInput = Color(0xFF1A2636);
-  
+  static const Color successGreen = Color(0xFF00E676);
   static const Color cyanAccent = Color(0xFF00D4FF);
   static const Color textPrimary = Color(0xFFF1F5F9);
   static const Color textSecondary = Color(0xFF7A889B);
@@ -45,23 +45,23 @@ abstract final class AppTextStyles {
 
   static const TextStyle logoWhite = TextStyle(
     fontFamily: fontMono,
-    fontSize: 18,
+    fontSize: 32,
     fontWeight: FontWeight.w800,
-    letterSpacing: 2.8,
+    letterSpacing: 1.6,
     color: AppColors.textPrimary,
   );
 
   static const TextStyle logoCyan = TextStyle(
     fontFamily: fontMono,
-    fontSize: 18,
+    fontSize: 32,
     fontWeight: FontWeight.w800,
-    letterSpacing: 2.8,
+    letterSpacing: 1.6,
     color: AppColors.cyanAccent,
   );
 
   static const TextStyle heading = TextStyle(
     fontFamily: fontMono,
-    fontSize: 22,
+    fontSize: 24,
     fontWeight: FontWeight.w700,
     letterSpacing: 1.2,
     color: AppColors.textPrimary,
@@ -69,11 +69,9 @@ abstract final class AppTextStyles {
 
   static const TextStyle subtitle = TextStyle(
     fontFamily: fontSans,
-    fontSize: 13.5,
+    fontSize: 16,
     fontWeight: FontWeight.w400,
     color: AppColors.textSecondary,
-    letterSpacing: -0.1,
-    height: 1.35,
   );
 
   static const TextStyle fieldLabel = TextStyle(
@@ -85,9 +83,9 @@ abstract final class AppTextStyles {
 
   static const TextStyle buttonLabel = TextStyle(
     fontFamily: fontMono,
-    fontSize: 13.5,
+    fontSize: 16,
     fontWeight: FontWeight.w700,
-    letterSpacing: 1.4,
+    letterSpacing: 1,
   );
 
   static const TextStyle actionLink = TextStyle(
@@ -107,11 +105,11 @@ class SensorLimits {
 abstract final class AppStrings {
   static const String appTitlePart1 = 'LOCK';
   static const String appTitlePart2 = 'SYNC';
-  static const String appTitle = appTitlePart1 + " " + appTitlePart2;
+  static const String appTitle = "$appTitlePart1 $appTitlePart2";
   static const String pageTitle = 'SECURITY ACCESS';
   static const String pageSubtitle =
-      'Enter your Master PIN passcode to authenticate and initialize locker control.';
-  static const String masterPinLabel = 'MASTER PIN PASSCODE';
+      'Enter your Master PIN to enter the app.';
+  static const String masterPinLabel = 'MASTER PIN';
   static const String masterPinPlaceholder = 'Enter 6-digit PIN';
   static const String changeMasterPin = 'CHANGE MASTER PIN?';
   static const String unlockTerminal = 'UNLOCK TERMINAL';
